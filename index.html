@@ -386,6 +386,25 @@
     table.table-responsive td[colspan] { display:block; text-align:center; }
     table.table-responsive td[colspan]::before { content:none; }
   }
+  /* ---- Bracket interactivo de Liguilla ---- */
+  .bracket-wrap { display:flex; align-items:stretch; gap:26px; overflow-x:auto; padding:6px 4px 18px; }
+  .bracket-col { display:flex; flex-direction:column; min-width:224px; flex-shrink:0; }
+  .bracket-round-title { text-align:center; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; color:#8a8a7e; margin-bottom:10px; }
+  .bracket-matches { display:flex; flex-direction:column; justify-content:space-around; gap:16px; flex:1; }
+  .bracket-match { background:#fff; border:1.5px solid #e3e3dc; border-radius:12px; overflow:hidden; position:relative; }
+  .bracket-col:not(:first-child) .bracket-match::before { content:""; position:absolute; left:-14px; top:50%; width:13px; height:2px; background:#d8d8cf; }
+  .bracket-match.decided { border-color:#B4BC00; }
+  .bracket-serie-label { font-size:9.5px; font-weight:800; color:#a1a1aa; text-transform:uppercase; letter-spacing:.03em; text-align:center; padding:6px 6px 2px; }
+  .bracket-team { display:flex; align-items:center; gap:8px; padding:6px 10px; }
+  .bracket-team + .bracket-team { border-top:1px solid #ececE4; }
+  .bracket-team.winner { background:#F4F7DE; }
+  .bracket-team-name { flex:1; font-size:12.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bracket-team-name.winner-name { font-weight:900; color:#8F9500; }
+  .bracket-score { font-size:12px; color:#71717a; font-weight:800; white-space:nowrap; }
+  .bracket-score.winner-name { color:#8F9500; }
+  .bracket-global { text-align:center; font-size:10px; color:#a1a1aa; font-weight:700; padding:5px; background:#fafaf7; border-top:1px solid #ececE4; }
+  /* ---- Crónica flash (Jugar partido) ---- */
+  .cronica-card { background:#F4F7DE; border:1.5px solid #B4BC00; }
 </style>
 </head>
 <body>
@@ -911,6 +930,32 @@ function headToHeadStats(teamIds, jornadas) {
         }
     }));
     return stats;
+}
+// Historial H2H (cara a cara) completo entre dos equipos a lo largo de todas las jornadas jugadas
+// (Apertura + Clausura + Liguilla), para mostrar contexto en la previa de un partido.
+// excludePartidoId permite descontar el propio partido que se está por jugar/editar, si ya estuviera cargado.
+function historialH2H(equipoAId, equipoBId, jornadas, excludePartidoId) {
+    let victoriasA = 0, victoriasB = 0, empates = 0, golesA = 0, golesB = 0, totalPJ = 0;
+    (jornadas || []).forEach((j) => j.partidos.forEach((p) => {
+        if (!p.jugado || p.id === excludePartidoId)
+            return;
+        const esAvsB = p.local === equipoAId && p.visitante === equipoBId;
+        const esBvsA = p.local === equipoBId && p.visitante === equipoAId;
+        if (!esAvsB && !esBvsA)
+            return;
+        const gA = esAvsB ? p.golesLocal : p.golesVisitante;
+        const gB = esAvsB ? p.golesVisitante : p.golesLocal;
+        golesA += gA;
+        golesB += gB;
+        totalPJ++;
+        if (gA > gB)
+            victoriasA++;
+        else if (gB > gA)
+            victoriasB++;
+        else
+            empates++;
+    }));
+    return { totalPJ, victoriasA, victoriasB, empates, golesA, golesB };
 }
 // Tabla general. Criterio oficial (PES17): 1) Puntos, 2) Puntos entre relevantes, 3) Dif. de gol entre
 // relevantes, 4) Goles a favor entre relevantes, 5) Dif. de gol general, 6) Goles a favor general,
@@ -1478,7 +1523,7 @@ function TorneoApp() {
                 tab === "equipos" && selectedTeamId && React.createElement(EquipoDetalle, { teamId: selectedTeamId, teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, onBack: () => setSelectedTeamId(null) }),
                 tab === "tabla" && React.createElement(TablaTabs, { teams: teams, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, tablaAperturaAnterior: tablaAperturaAnterior, tablaClausuraAnterior: tablaClausuraAnterior, tablaGeneralAnterior: tablaGeneralAnterior, fases: fases, setFases: setFases, setTab: goTab, setFaseActiva: setFaseActiva }),
                 tab === "calendario" && React.createElement(Calendario, { key: faseActiva, teams: teams, jornadas: jornadasFase, setJornadas: setJornadasFase, setTab: goTab, players: players, setPlayers: setPlayers, setTeams: setTeams }),
-                tab === "partido" && React.createElement(JugarPartido, { key: faseActiva, teams: teams, players: players, setPlayers: setPlayers, jornadas: jornadasFase, setJornadas: setJornadasFase, setTeams: setTeams, draft: draftPartido, setDraft: setDraftPartido, faseActiva: faseActiva }),
+                tab === "partido" && React.createElement(JugarPartido, { key: faseActiva, teams: teams, players: players, setPlayers: setPlayers, jornadas: jornadasFase, setJornadas: setJornadasFase, setTeams: setTeams, draft: draftPartido, setDraft: setDraftPartido, faseActiva: faseActiva, todasLasJornadas: todasLasJornadas }),
                 tab === "xiideal" && React.createElement(XiIdealJornada, { key: faseActiva, jornadas: jornadasFase, setJornadas: setJornadasFase, teams: teams, players: players, vecesXi: vecesXi }),
                 tab === "xiidealtorneo" && React.createElement(XiIdealTorneo, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players, vecesXi: vecesXi, xiTorneo: xiTorneo, setXiTorneo: setXiTorneo }),
                 tab === "premios" && React.createElement(PremiosView, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players }),
@@ -2178,7 +2223,39 @@ function FilaSerieLiguilla({ teams, serie, onPenales }) {
             React.createElement("button", { type: "button", onClick: () => onPenales(pVuelta.id, "A"), className: "text-[11px] px-2 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200" }, nA),
             React.createElement("button", { type: "button", onClick: () => onPenales(pVuelta.id, "B"), className: "text-[11px] px-2 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200" }, nB)));
 }
+// Tarjeta de un cruce (serie ida+vuelta) dentro del bracket: escudo, nombre y marcador global de cada equipo,
+// remarcando al clasificado; y abajo el detalle Ida / Vuelta.
+function BracketMatch({ teams, s, esFinal }) {
+    const teamObj = (id) => teams.find((t) => t.id === id);
+    const nombre = (id) => nombreEquipo(teams, id);
+    const idaTxt = s.pIda.jugado ? `${s.pIda.golesLocal}-${s.pIda.golesVisitante}` : "\u2014";
+    const vueltaTxt = s.pVuelta && s.pVuelta.jugado ? `${s.pVuelta.golesLocal}-${s.pVuelta.golesVisitante}` : "\u2014";
+    const ambosJugados = s.pIda.jugado && s.pVuelta && s.pVuelta.jugado;
+    const golesA = (s.pIda.jugado ? s.pIda.golesLocal : 0) + (s.pVuelta && s.pVuelta.jugado ? s.pVuelta.golesVisitante : 0);
+    const golesB = (s.pIda.jugado ? s.pIda.golesVisitante : 0) + (s.pVuelta && s.pVuelta.jugado ? s.pVuelta.golesLocal : 0);
+    const Fila = (id, goles, esGanador) => React.createElement("div", { className: `bracket-team${esGanador ? " winner" : ""}` },
+        React.createElement(EscudoFila, { team: teamObj(id), size: 20 }),
+        React.createElement("span", { className: `bracket-team-name${esGanador ? " winner-name" : ""}` }, id ? nombre(id) : "Por definir"),
+        esGanador && esFinal && React.createElement("span", { title: "Campe\u00F3n" }, "\uD83C\uDFC6"),
+        React.createElement("span", { className: `bracket-score${esGanador ? " winner-name" : ""}` }, ambosJugados ? goles : "\u2014"));
+    return React.createElement("div", { className: `bracket-match${s.ganador ? " decided" : ""}` },
+        React.createElement("div", { className: "bracket-serie-label" }, s.serie),
+        Fila(s.equipoA, golesA, s.ganador === s.equipoA),
+        Fila(s.equipoB, golesB, s.ganador === s.equipoB),
+        React.createElement("div", { className: "bracket-global" }, `Ida ${idaTxt} \u00B7 Vuelta ${vueltaTxt}`));
+}
+// Bracket interactivo (diagrama de eliminaci\u00F3n directa) de la Liguilla: Cuartos de Final, Semifinales y
+// Gran Final en columnas, con scroll horizontal en pantallas chicas. Reutiliza la misma estructura de
+// "rondas" (series con pIda/pVuelta/ganador) que ya arma LiguillaView.
+function BracketLiguilla({ teams, rondas }) {
+    if (!rondas.length)
+        return React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay cruces generados.");
+    return React.createElement("div", { className: "bracket-wrap" }, rondas.map((r) => React.createElement("div", { key: r.nombreRonda, className: "bracket-col" },
+        React.createElement("div", { className: "bracket-round-title" }, r.nombreRonda),
+        React.createElement("div", { className: "bracket-matches" }, r.series.map((s, i) => React.createElement(BracketMatch, { key: i, teams, s, esFinal: r.nombreRonda === "Final" }))))));
+}
 function LiguillaView({ teams, tablaApertura, tablaClausura, tablaGeneral, fases, setFases, setTab, setFaseActiva }) {
+    const [vista, setVista] = usePersistedState("liguillaVista", "bracket");
     const clasificados = calcularClasificadosLiguilla(tablaApertura, tablaClausura, tablaGeneral);
     const cruces = clasificados.completo ? armarCruceCuartos(clasificados) : [];
     const yaGenerada = fases.liguilla.length > 0;
@@ -2226,9 +2303,14 @@ function LiguillaView({ teams, tablaApertura, tablaClausura, tablaGeneral, fases
             React.createElement("div", { className: "text-2xl" }, "\uD83C\uDFC6"),
             React.createElement("div", { className: "font-black text-lg" }, nombre(campeon)),
             React.createElement("div", { className: "text-xs text-zinc-500" }, "Campe\u00F3n del torneo")),
-        rondas.map((r) => React.createElement("div", { key: r.nombreRonda, className: "space-y-2" },
-            React.createElement("h3", { className: "text-sm font-black" }, r.nombreRonda),
-            React.createElement("div", { className: "grid md:grid-cols-2 gap-2" }, r.series.map((s, i) => React.createElement(FilaSerieLiguilla, { key: i, teams, serie: s, onPenales: setPenalGanador }))))));
+        rondas.length > 0 && React.createElement("div", { className: "space-y-2" },
+            React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+                React.createElement("h3", { className: "text-sm font-black" }, "\uD83C\uDFC6 Llaves de la Liguilla"),
+                React.createElement("div", { className: "tabs-even", style: { maxWidth: 220 } }, [["bracket", "\uD83D\uDDC2\uFE0F Bracket"], ["lista", "\uD83D\uDCCB Lista"]].map(([val, label]) => React.createElement("button", { key: val, type: "button", onClick: () => setVista(val), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: vista === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label)))),
+            vista === "bracket" && React.createElement(BracketLiguilla, { teams, rondas }),
+            vista === "lista" && rondas.map((r) => React.createElement("div", { key: r.nombreRonda, className: "space-y-2" },
+                React.createElement("h4", { className: "text-sm font-black" }, r.nombreRonda),
+                React.createElement("div", { className: "grid md:grid-cols-2 gap-2" }, r.series.map((s, i) => React.createElement(FilaSerieLiguilla, { key: i, teams, serie: s, onPenales: setPenalGanador })))))));
 }
 // ---------- Calendario ----------
 // Escudo chico reutilizado en las filas de calendario (placeholder con inicial si no hay imagen).
@@ -2622,16 +2704,102 @@ function TarjetaResultadoBoton({ partido, localTeam, visTeam, localSquad, visSqu
                 !listo && React.createElement("div", { className: "text-center text-zinc-500 text-sm py-6" }, "Generando tarjeta\u2026"))));
 }
 // ---------- Jugar partido ----------
-function JugarPartido({ teams, players, setPlayers, jornadas, setJornadas, setTeams, draft, setDraft, faseActiva }) {
+// Módulo H2H (cara a cara) que se muestra en la previa de un partido: historial completo entre ambos
+// clubes (Apertura + Clausura + Liguilla), con partidos jugados, victorias de cada uno, empates y goles.
+function HistorialH2H({ teams, jornadas, localTeam, visTeam, excludeId }) {
+    const h2h = useMemo(() => historialH2H(localTeam.id, visTeam.id, jornadas, excludeId), [localTeam.id, visTeam.id, jornadas, excludeId]);
+    return React.createElement("div", { className: "card2" },
+        React.createElement("div", { className: "section-header px-4 py-2.5 flex items-center gap-2" },
+            React.createElement(Icon, { size: 14 }, "\uD83C\uDD9A"),
+            " Historial H2H"),
+        React.createElement("div", { className: "p-4" }, h2h.totalPJ === 0
+            ? React.createElement("div", { className: "text-xs text-zinc-500 text-center" }, `Primer enfrentamiento entre ${localTeam.nombre} y ${visTeam.nombre}.`)
+            : React.createElement("div", { className: "space-y-3" },
+                React.createElement("div", { className: "text-center text-xs text-zinc-500" }, `${h2h.totalPJ} partido${h2h.totalPJ === 1 ? "" : "s"} jugado${h2h.totalPJ === 1 ? "" : "s"} entre ambos`),
+                React.createElement("div", { className: "grid grid-cols-3 gap-2 text-center" },
+                    React.createElement("div", null,
+                        React.createElement("div", { className: "text-lg font-black text-[#8F9500]" }, h2h.victoriasA),
+                        React.createElement("div", { className: "text-[10px] text-zinc-500 truncate" }, localTeam.nombre)),
+                    React.createElement("div", null,
+                        React.createElement("div", { className: "text-lg font-black text-zinc-400" }, h2h.empates),
+                        React.createElement("div", { className: "text-[10px] text-zinc-500" }, "Empates")),
+                    React.createElement("div", null,
+                        React.createElement("div", { className: "text-lg font-black text-[#8F9500]" }, h2h.victoriasB),
+                        React.createElement("div", { className: "text-[10px] text-zinc-500 truncate" }, visTeam.nombre))),
+                React.createElement("div", { className: "text-center text-xs text-zinc-500" },
+                    "Goles totales: ",
+                    React.createElement("b", { className: "text-zinc-700" }, h2h.golesA),
+                    " - ",
+                    React.createElement("b", { className: "text-zinc-700" }, h2h.golesB)))));
+}
+// Genera un párrafo narrativo breve (estilo periodístico) a partir del resultado de un partido recién
+// guardado, usando plantillas dinámicas según la diferencia de gol, con variantes elegidas al azar.
+function generarCronica({ localNombre, visNombre, golesLocal, golesVis, mvpNombre, jornadaLabel }) {
+    const rand = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    const marcador = `${golesLocal}-${golesVis}`;
+    const empate = golesLocal === golesVis;
+    const ganador = golesLocal > golesVis ? localNombre : visNombre;
+    const perdedor = golesLocal > golesVis ? visNombre : localNombre;
+    const diff = Math.abs(golesLocal - golesVis);
+    let apertura;
+    if (empate) {
+        apertura = rand([
+            `${localNombre} y ${visNombre} se repartieron los puntos en un ${marcador} sin goleadores de m\u00E1s`,
+            `Reparto de puntos: ${localNombre} ${marcador} ${visNombre}, en un partido parejo de principio a fin`,
+            `Igualdad total entre ${localNombre} y ${visNombre}, que empataron ${marcador} en un cruce muy disputado`,
+        ]);
+    }
+    else if (diff === 1) {
+        apertura = rand([
+            `En un duelo cerrado, ${ganador} vence ${marcador} a ${perdedor}`,
+            `${ganador} se qued\u00F3 con un partido ajustado, ganando ${marcador} ante ${perdedor}`,
+            `Triunfo m\u00EDnimo de ${ganador}, que super\u00F3 ${marcador} a ${perdedor} en un final de infarto`,
+        ]);
+    }
+    else if (diff === 2) {
+        apertura = rand([
+            `${ganador} se impuso con claridad ${marcador} sobre ${perdedor}`,
+            `Victoria s\u00F3lida de ${ganador}, que dobleg\u00F3 ${marcador} a ${perdedor}`,
+            `${ganador} mostr\u00F3 su jerarqu\u00EDa y gan\u00F3 ${marcador} a ${perdedor}`,
+        ]);
+    }
+    else {
+        apertura = rand([
+            `Goleada de ${ganador}, que aplast\u00F3 ${marcador} a ${perdedor}`,
+            `Noche para el olvido de ${perdedor}, goleado ${marcador} por ${ganador}`,
+            `Sin piedad: ${ganador} liquid\u00F3 el partido y venci\u00F3 ${marcador} a ${perdedor}`,
+        ]);
+    }
+    const mvpFrase = mvpNombre ? rand([
+        `, con una actuaci\u00F3n estelar de ${mvpNombre}`,
+        `, de la mano de un gran ${mvpNombre}, elegido MVP del partido`,
+        `, con ${mvpNombre} como la gran figura del encuentro`,
+    ]) : "";
+    const cierre = jornadaLabel ? ` (${jornadaLabel})` : "";
+    return `${apertura}${mvpFrase}${cierre}.`;
+}
+function JugarPartido({ teams, players, setPlayers, jornadas, setJornadas, setTeams, draft, setDraft, faseActiva, todasLasJornadas }) {
     if (!jornadas.length)
         return React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay una Liguilla generada. And\u00E1 a la pesta\u00F1a Tabla \u2192 Liguilla para generarla cuando terminen Apertura y Clausura.");
-    return JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas, setTeams, draft, setDraft, faseActiva });
+    return JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas, setTeams, draft, setDraft, faseActiva, todasLasJornadas });
 }
 // Todo lo que se va cargando acá (jornada elegida, partido, alineaciones, goles, tarjetas, cambios, scores, MVP)
 // vive en el borrador persistente (draft/setDraft) que maneja TorneoApp, en vez de estado local del componente.
 // Así, si se cambia de pestaña/sección (o incluso se cierra y reabre la página) antes de tocar "Guardar partido",
 // nada de lo cargado se pierde: queda listo para retomar y confirmar después.
-function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas, setTeams, draft, setDraft, faseActiva }) {
+function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas, setTeams, draft, setDraft, faseActiva, todasLasJornadas }) {
+    // Texto de la crónica flash generada al guardar el último partido, y estado del botón de copiado.
+    // Es estado local (no borrador persistente): es un resumen efímero del guardado que se acaba de hacer.
+    const [cronica, setCronica] = useState("");
+    const [cronicaCopiada, setCronicaCopiada] = useState(false);
+    const copiarCronica = () => {
+        if (!navigator.clipboard)
+            return;
+        navigator.clipboard.writeText(cronica).then(() => {
+            setCronicaCopiada(true);
+            setTimeout(() => setCronicaCopiada(false), 1500);
+        });
+    };
     const patch = (campo, valor) => setDraft((d) => ({ ...d, [campo]: typeof valor === "function" ? valor(d[campo]) : valor }));
     const jn = draft.jn;
     const setJn = (v) => patch("jn", v);
@@ -2752,12 +2920,31 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
         setPlayers(nuevosPlayers);
         setTeams(nuevosTeams);
         setJornadas(jornadas.map((j) => j.numero !== jn ? j : { ...jornadaActualizada, bonoAplicado: bonoDeEstaJornada }));
+        const mvpPlayer = mvp ? players.find((p) => p.id === mvp) : null;
+        setCronica(generarCronica({
+            localNombre: localTeam.nombre,
+            visNombre: visTeam.nombre,
+            golesLocal,
+            golesVis,
+            mvpNombre: mvpPlayer ? mvpPlayer.nombre : "",
+            jornadaLabel: (jornada && jornada.nombre) || `Jornada ${jn}`,
+        }));
+        setCronicaCopiada(false);
         alert(esEdicion ? `Cambios guardados: ${localTeam.nombre} ${golesLocal} - ${golesVis} ${visTeam.nombre}` : `Partido guardado: ${localTeam.nombre} ${golesLocal} - ${golesVis} ${visTeam.nombre}`);
         setPartidoId("");
     };
     return (React.createElement("div", { className: "space-y-3" },
+        cronica && React.createElement("div", { className: "card2 cronica-card p-4 space-y-2.5" },
+            React.createElement("div", { className: "flex items-center justify-between gap-2" },
+                React.createElement("div", { className: "text-xs font-black text-[#8F9500] flex items-center gap-1.5" },
+                    React.createElement(Icon, { size: 14 }, "\uD83D\uDCF0"),
+                    " Cr\u00F3nica flash"),
+                React.createElement("button", { type: "button", onClick: () => setCronica(""), className: "text-zinc-400 hover:text-zinc-600 text-xs", title: "Cerrar" }, "\u2715")),
+            React.createElement("p", { className: "text-sm leading-snug" }, cronica),
+            React.createElement("button", { type: "button", onClick: copiarCronica, className: "text-xs px-3 py-1.5 rounded-lg font-semibold btn-olive w-fit" }, cronicaCopiada ? "\u2705 Copiado" : "\uD83D\uDCCB Copiar cr\u00F3nica")),
         React.createElement(SelectorPartido, { jornadas, jn, setJn, partidosDisponibles, partidoId, setPartidoId, teams, faseActiva }),
         !partido && React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Selecciona jornada y partido (debe tener equipos asignados en el calendario)."),
+        partido && localTeam && visTeam && React.createElement(HistorialH2H, { teams, jornadas: todasLasJornadas || jornadas, localTeam, visTeam, excludeId: partido.id }),
         partido && (React.createElement(React.Fragment, null,
             esEdicion && React.createElement("div", { className: "card2 p-3 flex flex-wrap items-center justify-between gap-2", style: { borderColor: "#fde68a", background: "#fffbeb" } },
                 React.createElement("span", { className: "text-xs text-amber-800 font-semibold flex items-center gap-1.5" },
