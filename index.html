@@ -1327,6 +1327,7 @@ function TorneoApp() {
     const tablaClausuraAnterior = useMemo(() => calcularTablaAnterior(teams, [fases.clausura]), [teams, fases.clausura]);
     const tablaGeneralAnterior = useMemo(() => calcularTablaAnterior(teams, [fases.apertura, fases.clausura]), [teams, fases.apertura, fases.clausura]);
     const todasLasJornadas = useMemo(() => [...fases.apertura, ...fases.clausura, ...fases.liguilla], [fases]);
+    const vecesXi = useMemo(() => contarAparicionesXi(todasLasJornadas), [todasLasJornadas]);
     const aperturaCompleta = useMemo(() => faseCompleta(fases.apertura), [fases.apertura]);
     const clausuraCompleta = useMemo(() => faseCompleta(fases.clausura), [fases.clausura]);
     const clausuraIniciada = useMemo(() => ultimaJornadaJugada(fases.clausura) > 0, [fases.clausura]);
@@ -1444,8 +1445,8 @@ function TorneoApp() {
                 tab === "tabla" && React.createElement(TablaTabs, { teams: teams, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, tablaAperturaAnterior: tablaAperturaAnterior, tablaClausuraAnterior: tablaClausuraAnterior, tablaGeneralAnterior: tablaGeneralAnterior, fases: fases, setFases: setFases, setTab: goTab, setFaseActiva: setFaseActiva }),
                 tab === "calendario" && React.createElement(Calendario, { key: faseActiva, teams: teams, jornadas: jornadasFase, setJornadas: setJornadasFase, setTab: goTab, players: players, setPlayers: setPlayers, setTeams: setTeams }),
                 tab === "partido" && React.createElement(JugarPartido, { key: faseActiva, teams: teams, players: players, setPlayers: setPlayers, jornadas: jornadasFase, setJornadas: setJornadasFase, setTeams: setTeams, draft: draftPartido, setDraft: setDraftPartido, faseActiva: faseActiva }),
-                tab === "xiideal" && React.createElement(XiIdealJornada, { key: faseActiva, jornadas: jornadasFase, setJornadas: setJornadasFase, teams: teams, players: players }),
-                tab === "xiidealtorneo" && React.createElement(XiIdealTorneo, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players }),
+                tab === "xiideal" && React.createElement(XiIdealJornada, { key: faseActiva, jornadas: jornadasFase, setJornadas: setJornadasFase, teams: teams, players: players, vecesXi: vecesXi }),
+                tab === "xiidealtorneo" && React.createElement(XiIdealTorneo, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players, vecesXi: vecesXi }),
                 tab === "mercado" && React.createElement(Mercado, { teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, transfers: transfers, setTransfers: setTransfers, abierto: mercadoAbierto, aperturaCompleta: aperturaCompleta, clausuraCompleta: clausuraCompleta, clausuraIniciada: clausuraIniciada, liguillaIniciada: liguillaIniciada }),
                 tab === "rankings" && React.createElement(Rankings, { players: players, teams: teams, jornadas: todasLasJornadas }),
                 tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
@@ -2874,6 +2875,19 @@ function MercadoInterno({ teams, setTeams, players, setPlayers, transfers, setTr
                 !transfers.length && React.createElement("div", { className: "text-zinc-500" }, "Sin fichajes todav\u00EDa.")))));
 }
 // ---------- XI Ideal de la jornada (equipo ideal manual, visual) ----------
+// Cuenta, para cada jugador, cu\u00E1ntas jornadas (de todas las fases) fue titular en el XI Ideal manual.
+// No cuenta suplencias: solo los 11 titulares (arquero + l\u00EDneas) de cada jornada con xiIdeal guardado.
+function contarAparicionesXi(todasLasJornadas) {
+    const mapa = new Map();
+    (todasLasJornadas || []).forEach((j) => {
+        const xi = j.xiIdeal;
+        if (!xi)
+            return;
+        const titulares = [xi.PT, ...(xi.filas ? xi.filas.flat() : [])].filter(Boolean);
+        titulares.forEach((id) => mapa.set(id, (mapa.get(id) || 0) + 1));
+    });
+    return mapa;
+}
 function colorScore(s) {
     if (s == null)
         return "#71717a";
@@ -2971,9 +2985,10 @@ function ExportarXiBoton({ xi, formacion, jornadaNumero, titulo, players, teams,
         open && React.createElement(ExportarXiView, { xi: xi, formacion: formacion, jornadaNumero: jornadaNumero, titulo: titulo, players: players, teams: teams, statsMap: statsMap, onClose: () => setOpen(false) }));
 }
 // Fila de stats de un jugador (titular o suplente) en el listado de la jornada.
-function FilaStatsJugadorJornada({ p, teams, statsMap }) {
+function FilaStatsJugadorJornada({ p, teams, statsMap, vecesXi }) {
     var _a;
     const st = statsMap.get(p.id);
+    const veces = vecesXi ? vecesXi.get(p.id) || 0 : 0;
     return React.createElement("div", { className: "flex justify-between items-center px-4 py-2 text-xs" },
         React.createElement("div", null,
             React.createElement("div", null,
@@ -2989,7 +3004,8 @@ function FilaStatsJugadorJornada({ p, teams, statsMap }) {
                 " \u00B7 ",
                 p.posicion,
                 " \u00B7 GRL ",
-                valoracionEfectiva(p).toFixed(0))),
+                valoracionEfectiva(p).toFixed(0),
+                vecesXi ? ` \u00B7 \u2B50 ${veces}x en el XI Ideal` : "")),
         st && React.createElement("span", { className: "font-black text-[#8F9500] text-right" },
             st.score.toFixed(1),
             React.createElement("div", { className: "text-[10px] text-zinc-400 font-normal" },
@@ -2998,12 +3014,12 @@ function FilaStatsJugadorJornada({ p, teams, statsMap }) {
                 st.asistencias,
                 "A")));
 }
-function XiIdealJornada({ jornadas, setJornadas, teams, players }) {
+function XiIdealJornada({ jornadas, setJornadas, teams, players, vecesXi }) {
     if (!jornadas.length)
         return React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay una Liguilla generada. And\u00E1 a la pesta\u00F1a Tabla \u2192 Liguilla para generarla cuando terminen Apertura y Clausura.");
-    return XiIdealJornadaInterno({ jornadas, setJornadas, teams, players });
+    return XiIdealJornadaInterno({ jornadas, setJornadas, teams, players, vecesXi });
 }
-function XiIdealJornadaInterno({ jornadas, setJornadas, teams, players }) {
+function XiIdealJornadaInterno({ jornadas, setJornadas, teams, players, vecesXi }) {
     const [jn, setJn] = usePersistedState("xiIdealJn", 1);
     const jornada = jornadas.find((j) => j.numero === jn);
     const formacionDefault = "4-3-3";
@@ -3075,13 +3091,13 @@ function XiIdealJornadaInterno({ jornadas, setJornadas, teams, players }) {
             React.createElement("div", { className: "flex flex-wrap gap-2 justify-center" }, suplentes.map((id, i) => renderSuplente(i, id)))),
         jugadoresXi.length > 0 && React.createElement("div", { className: "card2" },
             React.createElement("div", { className: "section-header px-4 py-2.5" }, "Titulares elegidos (stats de esta jornada)"),
-            React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresXi.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: elegiblesMap })))),
+            React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresXi.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: elegiblesMap, vecesXi: vecesXi })))),
         jugadoresSup.length > 0 && React.createElement("div", { className: "card2" },
             React.createElement("div", { className: "section-header px-4 py-2.5" }, "Suplentes elegidos (stats de esta jornada)"),
-            React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresSup.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: elegiblesMap }))))));
+            React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresSup.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: elegiblesMap, vecesXi: vecesXi }))))));
 }
 // ---------- XI Ideal del Torneo (auto-armado por estadísticas acumuladas) ----------
-function XiIdealTorneo({ fases, todasLasJornadas, teams, players }) {
+function XiIdealTorneo({ fases, todasLasJornadas, teams, players, vecesXi }) {
     const [periodo, setPeriodo] = usePersistedState("xiIdealTorneoPeriodo", "torneo");
     const [formacion, setFormacion] = usePersistedState("xiIdealTorneoFormacion", "4-3-3");
     const PERIODOS = [
@@ -3129,10 +3145,10 @@ function XiIdealTorneo({ fases, todasLasJornadas, teams, players }) {
                 React.createElement("div", { className: "flex flex-wrap gap-2 justify-center" }, (xi.suplentes || []).map((id, i) => React.createElement(SlotDisplay, { key: `SUP-${i}`, jugadorId: id, players: players, teams: teams, statsMap: statsMap, placeholder: "Suplente" })))),
             jugadoresXi.length > 0 && React.createElement("div", { className: "card2" },
                 React.createElement("div", { className: "section-header px-4 py-2.5" }, `Titulares (stats acumuladas \u2014 ${activo.label})`),
-                React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresXi.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: statsMap })))),
+                React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresXi.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: statsMap, vecesXi: vecesXi })))),
             jugadoresSup.length > 0 && React.createElement("div", { className: "card2" },
                 React.createElement("div", { className: "section-header px-4 py-2.5" }, `Suplentes (stats acumuladas \u2014 ${activo.label})`),
-                React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresSup.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: statsMap }))))))));
+                React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresSup.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: statsMap, vecesXi: vecesXi }))))))));
 }
 // ---------- Rankings ----------
 function TablaRanking({ titulo, icon, rows, allRows, cols, teamName, extra }) {
