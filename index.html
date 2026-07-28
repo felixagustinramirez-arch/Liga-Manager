@@ -1927,10 +1927,56 @@ function FlechaPosicion({ actual, anterior }) {
         return React.createElement("span", { className: "text-green-500 text-[10px] leading-none shrink-0", title: `Sub\u00F3 ${anterior - actual} posici\u00F3n(es)` }, "\u25B2");
     return React.createElement("span", { className: "text-red-500 text-[10px] leading-none shrink-0", title: `Baj\u00F3 ${actual - anterior} posici\u00F3n(es)` }, "\u25BC");
 }
-function TablaGeneral({ tabla, tablaAnterior, titulo }) {
+// Fila de un partido dentro del calendario de un equipo (usado en la miniventana al tocar un equipo en la Tabla).
+function FilaCalendarioEquipo({ p, equipo, teams }) {
+    const rivalId = p.local === equipo.id ? p.visitante : p.local;
+    const rival = teams.find((t) => t.id === rivalId);
+    const esLocal = p.local === equipo.id;
+    const misGoles = esLocal ? p.golesLocal : p.golesVisitante;
+    const rivalGoles = esLocal ? p.golesVisitante : p.golesLocal;
+    const resultado = p.jugado ? (misGoles > rivalGoles ? "G" : misGoles < rivalGoles ? "P" : "E") : null;
+    const colorResultado = resultado === "G" ? "text-emerald-600" : resultado === "P" ? "text-red-500" : resultado === "E" ? "text-zinc-500" : "text-zinc-300";
+    return React.createElement("div", { className: "flex items-center gap-2 py-2 row-line" },
+        React.createElement("span", { className: "text-[10px] font-bold text-zinc-400 w-9 shrink-0" }, `J${p.jornadaNumero}`),
+        React.createElement("span", { className: "text-[10px] font-bold w-4 shrink-0 text-center text-zinc-400" }, esLocal ? "L" : "V"),
+        React.createElement(EscudoFila, { team: rival, size: 22 }),
+        React.createElement("span", { className: "text-sm flex-1 truncate" }, rival ? rival.nombre : "Por definir"),
+        React.createElement("span", { className: `text-sm font-black shrink-0 ${colorResultado}` }, p.jugado ? `${misGoles} - ${rivalGoles}` : "vs"),
+        p.fecha && React.createElement("span", { className: "text-[10px] text-zinc-400 shrink-0 hidden sm:inline" }, p.fecha));
+}
+// Miniventana con el calendario completo de un equipo (todos los partidos de la fase mostrada, jugados y pendientes).
+// Se abre al tocar un equipo en cualquiera de las tablas (Apertura / Clausura / General).
+function EquipoCalendarioSheet({ equipo, jornadas, teams, onClose }) {
+    if (!equipo)
+        return null;
+    const partidos = [];
+    (jornadas || []).forEach((j) => {
+        (j.partidos || []).forEach((p) => {
+            if (p.local === equipo.id || p.visitante === equipo.id) {
+                partidos.push({ ...p, jornadaNumero: j.numero });
+            }
+        });
+    });
+    partidos.sort((a, b) => (a.jornadaNumero || 0) - (b.jornadaNumero || 0));
+    const jugados = partidos.filter((p) => p.jugado);
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex justify-between items-center mb-1" },
+                React.createElement("div", { className: "flex items-center gap-2 min-w-0" },
+                    equipo.escudo ? React.createElement("img", { src: equipo.escudo, className: "w-8 h-8 rounded-full object-cover shrink-0" }) : null,
+                    React.createElement("span", { className: "font-black text-lg truncate" }, equipo.nombre)),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100 shrink-0" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement("div", { className: "text-xs text-zinc-500 mb-2" }, `${jugados.length} jugados de ${partidos.length} partidos`),
+            React.createElement("div", { className: "divide-y divide-zinc-100" }, partidos.map((p) => React.createElement(FilaCalendarioEquipo, { key: p.id, p: p, equipo: equipo, teams: teams }))),
+            !partidos.length && React.createElement("div", { className: "text-center text-zinc-500 py-6 text-sm" }, "Sin partidos programados en esta fase.")));
+}
+function TablaGeneral({ tabla, tablaAnterior, titulo, jornadas, teams }) {
     const posAnteriorPorId = {};
     (tablaAnterior || []).forEach((t, i) => (posAnteriorPorId[t.id] = i + 1));
+    const [equipoSel, setEquipoSel] = useState(null);
     return (React.createElement("div", { className: "card2" },
+        equipoSel && React.createElement(EquipoCalendarioSheet, { equipo: equipoSel, jornadas: jornadas, teams: teams || [], onClose: () => setEquipoSel(null) }),
         React.createElement("div", { className: "section-header px-4 py-2.5" }, titulo || "Tabla general"),
         React.createElement("div", { className: "overflow-x-auto" },
             React.createElement("table", { className: "text-sm" },
@@ -1947,7 +1993,7 @@ function TablaGeneral({ tabla, tablaAnterior, titulo }) {
                         React.createElement("th", null, "DG"),
                         React.createElement("th", null, "PTS"))),
                 React.createElement("tbody", null,
-                    tabla.map((t, i) => (React.createElement("tr", { key: t.id, className: `row-line ${i < 4 ? "bg-[#F4F7DE]" : ""}` },
+                    tabla.map((t, i) => (React.createElement("tr", { key: t.id, className: `row-line cursor-pointer hover:bg-zinc-50 ${i < 4 ? "bg-[#F4F7DE]" : ""}`, onClick: () => setEquipoSel(t) },
                         React.createElement("td", { className: "text-center" }, i + 1),
                         React.createElement("td", { className: "py-2 flex items-center gap-2" },
                             React.createElement(FlechaPosicion, { actual: i + 1, anterior: posAnteriorPorId[t.id] }),
@@ -1970,9 +2016,9 @@ function TablaTabs({ teams, tablaApertura, tablaClausura, tablaGeneral, tablaApe
     const OPCIONES = [["apertura", "Apertura"], ["clausura", "Clausura"], ["general", "General"], ["liguilla", "\uD83C\uDFC6 Liguilla"]];
     return (React.createElement("div", { className: "space-y-3" },
         React.createElement("div", { className: "tabs-even" }, OPCIONES.map(([val, label]) => React.createElement("button", { key: val, type: "button", onClick: () => setSub(val), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: sub === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label))),
-        sub === "apertura" && React.createElement(TablaGeneral, { tabla: tablaApertura, tablaAnterior: tablaAperturaAnterior, titulo: "Tabla Apertura" }),
-        sub === "clausura" && React.createElement(TablaGeneral, { tabla: tablaClausura, tablaAnterior: tablaClausuraAnterior, titulo: "Tabla Clausura" }),
-        sub === "general" && React.createElement(TablaGeneral, { tabla: tablaGeneral, tablaAnterior: tablaGeneralAnterior, titulo: "Tabla General (Apertura + Clausura)" }),
+        sub === "apertura" && React.createElement(TablaGeneral, { tabla: tablaApertura, tablaAnterior: tablaAperturaAnterior, titulo: "Tabla Apertura", jornadas: fases.apertura, teams: teams }),
+        sub === "clausura" && React.createElement(TablaGeneral, { tabla: tablaClausura, tablaAnterior: tablaClausuraAnterior, titulo: "Tabla Clausura", jornadas: fases.clausura, teams: teams }),
+        sub === "general" && React.createElement(TablaGeneral, { tabla: tablaGeneral, tablaAnterior: tablaGeneralAnterior, titulo: "Tabla General (Apertura + Clausura)", jornadas: [...fases.apertura, ...fases.clausura], teams: teams }),
         sub === "liguilla" && React.createElement(LiguillaView, { teams, tablaApertura, tablaClausura, tablaGeneral, fases, setFases, setTab, setFaseActiva })));
 }
 function nombreEquipo(teams, id) {
