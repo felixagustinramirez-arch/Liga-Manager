@@ -1268,6 +1268,9 @@ function TorneoApp() {
     const [fases, setFases] = useState({ apertura: [], clausura: [], liguilla: [] });
     const [faseActiva, setFaseActiva] = usePersistedState("faseActiva", "apertura");
     const [transfers, setTransfers] = useState([]);
+    // XI Ideal "del Torneo": uno completamente independiente por período (Torneo completo / Apertura / Clausura / Liguilla).
+    // Es manual (igual que el XI de la Jornada) y cada período guarda su propia selección, sin heredar ni mezclarse con los demás.
+    const [xiTorneo, setXiTorneo] = useState({ torneo: null, apertura: null, clausura: null, liguilla: null });
     const [tab, setTab] = usePersistedState("tab", "dashboard");
     const [selectedTeamId, setSelectedTeamId] = useState(null);
     const [loaded, setLoaded] = useState(false);
@@ -1285,6 +1288,7 @@ function TorneoApp() {
             setTeams(d.teams || []);
             setPlayers(d.players || []);
             setTransfers(d.transfers || []);
+            setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
             if (d.fases) {
                 setFases({
                     apertura: d.fases.apertura && d.fases.apertura.length ? d.fases.apertura : generarJornadas(),
@@ -1309,9 +1313,9 @@ function TorneoApp() {
             return;
         if (saveTimer.current)
             clearTimeout(saveTimer.current);
-        saveTimer.current = setTimeout(() => saveData({ teams, players, fases, transfers }), 400);
+        saveTimer.current = setTimeout(() => saveData({ teams, players, fases, transfers, xiTorneo }), 400);
         return () => clearTimeout(saveTimer.current);
-    }, [teams, players, fases, transfers, loaded]);
+    }, [teams, players, fases, transfers, xiTorneo, loaded]);
     useEffect(() => {
         if (!loaded)
             return;
@@ -1356,7 +1360,7 @@ function TorneoApp() {
     const goTab = (id) => { setTab(id); if (id !== "equipos")
         setSelectedTeamId(null); setMobileNavOpen(false); };
     const exportarDatos = () => {
-        const blob = new Blob([JSON.stringify({ teams, players, fases, transfers }, null, 2)], { type: "application/json" });
+        const blob = new Blob([JSON.stringify({ teams, players, fases, transfers, xiTorneo }, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -1389,6 +1393,7 @@ function TorneoApp() {
                     setFases({ apertura: d.jornadas && d.jornadas.length ? d.jornadas : generarJornadas(), clausura: generarJornadas(), liguilla: [] });
                 }
                 setTransfers(d.transfers || []);
+                setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
                 alert("Copia importada correctamente.");
             }
             catch (err) {
@@ -1419,6 +1424,7 @@ function TorneoApp() {
         setPlayers([]);
         setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
         setTransfers([]);
+        setXiTorneo({ torneo: null, apertura: null, clausura: null, liguilla: null });
         setDraftPartido(draftPartidoVacio());
         try {
             localStorage.removeItem(STORAGE_KEY);
@@ -1446,7 +1452,7 @@ function TorneoApp() {
                 tab === "calendario" && React.createElement(Calendario, { key: faseActiva, teams: teams, jornadas: jornadasFase, setJornadas: setJornadasFase, setTab: goTab, players: players, setPlayers: setPlayers, setTeams: setTeams }),
                 tab === "partido" && React.createElement(JugarPartido, { key: faseActiva, teams: teams, players: players, setPlayers: setPlayers, jornadas: jornadasFase, setJornadas: setJornadasFase, setTeams: setTeams, draft: draftPartido, setDraft: setDraftPartido, faseActiva: faseActiva }),
                 tab === "xiideal" && React.createElement(XiIdealJornada, { key: faseActiva, jornadas: jornadasFase, setJornadas: setJornadasFase, teams: teams, players: players, vecesXi: vecesXi }),
-                tab === "xiidealtorneo" && React.createElement(XiIdealTorneo, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players, vecesXi: vecesXi }),
+                tab === "xiidealtorneo" && React.createElement(XiIdealTorneo, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players, vecesXi: vecesXi, xiTorneo: xiTorneo, setXiTorneo: setXiTorneo }),
                 tab === "mercado" && React.createElement(Mercado, { teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, transfers: transfers, setTransfers: setTransfers, abierto: mercadoAbierto, aperturaCompleta: aperturaCompleta, clausuraCompleta: clausuraCompleta, clausuraIniciada: clausuraIniciada, liguillaIniciada: liguillaIniciada }),
                 tab === "rankings" && React.createElement(Rankings, { players: players, teams: teams, jornadas: todasLasJornadas }),
                 tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
@@ -3096,10 +3102,14 @@ function XiIdealJornadaInterno({ jornadas, setJornadas, teams, players, vecesXi 
             React.createElement("div", { className: "section-header px-4 py-2.5" }, "Suplentes elegidos (stats de esta jornada)"),
             React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresSup.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: elegiblesMap, vecesXi: vecesXi }))))));
 }
-// ---------- XI Ideal del Torneo (auto-armado por estadísticas acumuladas) ----------
-function XiIdealTorneo({ fases, todasLasJornadas, teams, players, vecesXi }) {
+// ---------- XI Ideal del Torneo (manual, independiente por período) ----------
+// A diferencia del XI de la Jornada (uno por cada jornada jugada), acá hay 4 XI totalmente autónomos entre sí:
+// "Torneo completo", "Apertura", "Clausura" y "Liguilla". Cada uno se arma a mano, se guarda por separado en
+// xiTorneo[periodo.id] y no se recalcula ni se mezcla con los demás. Solo se ofrecen como jugadores elegibles
+// los que sumaron minutos dentro de las jornadas de ese período, para que el rango de comparación tenga sentido.
+function XiIdealTorneo({ fases, todasLasJornadas, teams, players, vecesXi, xiTorneo, setXiTorneo }) {
     const [periodo, setPeriodo] = usePersistedState("xiIdealTorneoPeriodo", "torneo");
-    const [formacion, setFormacion] = usePersistedState("xiIdealTorneoFormacion", "4-3-3");
+    const formacionDefault = "4-3-3";
     const PERIODOS = [
         { id: "torneo", label: "Torneo completo", jornadas: todasLasJornadas },
         { id: "apertura", label: "Apertura", jornadas: fases.apertura },
@@ -3109,21 +3119,63 @@ function XiIdealTorneo({ fases, todasLasJornadas, teams, players, vecesXi }) {
     const activo = PERIODOS.find((p) => p.id === periodo) || PERIODOS[0];
     const jornadasPeriodo = activo.jornadas || [];
     const statsMap = useMemo(() => statsPorPeriodo(jornadasPeriodo), [jornadasPeriodo]);
-    const xi = useMemo(() => armarXiAutomatico(players, statsMap, formacion), [players, statsMap, formacion]);
-    const lineasRoles = (FORMACIONES_XI[formacion] || FORMACIONES_XI["4-3-3"]).lineas;
+    const elegiblesIds = new Set(statsMap.keys());
+    const suplentesVacio = [null, null, null, null, null];
+    const filasVacias = (nombreFormacion) => (FORMACIONES_XI[nombreFormacion] || FORMACIONES_XI[formacionDefault]).lineas.map((roles) => roles.map(() => null));
+    const xiVacio = { formacion: formacionDefault, PT: null, filas: filasVacias(formacionDefault), suplentes: suplentesVacio };
+    const xiGuardado = xiTorneo && xiTorneo[periodo];
+    // Compatibilidad: si el período nunca se armó, o quedó con una formación que ya no existe, se arranca vacío.
+    const xi = xiGuardado && xiGuardado.filas && FORMACIONES_XI[xiGuardado.formacion] ? xiGuardado : xiVacio;
+    const formacion = xi.formacion || formacionDefault;
+    const lineasRoles = (FORMACIONES_XI[formacion] || FORMACIONES_XI[formacionDefault]).lineas;
+    const suplentes = xi.suplentes && xi.suplentes.length === 5 ? xi.suplentes : suplentesVacio;
+    const updateXi = (nuevo) => setXiTorneo((prev) => ({ ...(prev || {}), [periodo]: nuevo }));
     const seleccionadosXi = [xi.PT, ...xi.filas.flat()].filter(Boolean);
-    const seleccionadosSup = (xi.suplentes || []).filter(Boolean);
+    const seleccionadosSup = suplentes.filter(Boolean);
+    const seleccionados = [...seleccionadosXi, ...seleccionadosSup];
+    const setSlot = (grupo, li, si, jugadorId) => {
+        if (grupo === "PT") {
+            updateXi({ ...xi, PT: jugadorId });
+        }
+        else if (grupo === "SUP") {
+            const arr = [...suplentes];
+            arr[si] = jugadorId;
+            updateXi({ ...xi, suplentes: arr });
+        }
+        else {
+            const filas = xi.filas.map((fila, i) => i !== li ? fila : fila.map((v, j) => j === si ? jugadorId : v));
+            updateXi({ ...xi, filas: filas });
+        }
+    };
+    const cambiarFormacion = (nombreFormacion) => {
+        const nuevasLineas = FORMACIONES_XI[nombreFormacion].lineas;
+        const idsPlanos = xi.filas.flat().filter(Boolean);
+        let cursor = 0;
+        const nuevasFilas = nuevasLineas.map((roles) => roles.map(() => idsPlanos[cursor++] || null));
+        updateXi({ ...xi, formacion: nombreFormacion, filas: nuevasFilas });
+    };
+    const autoArmar = () => {
+        if (!confirm(`Esto arma autom\u00E1ticamente el XI de "${activo.label}" con los mejores promedios y reemplaza la selecci\u00F3n manual actual de ese per\u00EDodo. Despu\u00E9s pod\u00E9s seguir edit\u00E1ndolo a mano. \u00BFContinuar?`))
+            return;
+        updateXi(armarXiAutomatico(players, statsMap, formacion));
+    };
+    const limpiarXi = () => {
+        if (!confirm(`\u00BFVaciar por completo el XI Ideal de "${activo.label}"?`))
+            return;
+        updateXi(xiVacio);
+    };
     const jugadoresXi = players.filter((p) => seleccionadosXi.includes(p.id));
     const jugadoresSup = players.filter((p) => seleccionadosSup.includes(p.id));
-    const renderSlot = (li, si, id, role) => React.createElement(SlotDisplay, { key: `${li}-${si}`, jugadorId: id, players: players, teams: teams, statsMap: statsMap, placeholder: role, role: role });
-    const renderPT = () => React.createElement(SlotDisplay, { jugadorId: xi.PT, players: players, teams: teams, statsMap: statsMap, placeholder: "PT", role: "PT" });
+    const renderSlotEditable = (li, si, id, role) => React.createElement(SlotPicker, { key: `${li}-${si}`, jugadorId: id, disabledIds: seleccionados, players: players, teams: teams, elegiblesIds: elegiblesIds, statsMap: statsMap, placeholder: role, role: role, onPick: (v) => setSlot("LINEA", li, si, v) });
+    const renderPTEditable = () => React.createElement(SlotPicker, { jugadorId: xi.PT, disabledIds: seleccionados, players: players, teams: teams, elegiblesIds: elegiblesIds, statsMap: statsMap, placeholder: "PT", role: "PT", onPick: (v) => setSlot("PT", 0, 0, v) });
+    const renderSuplente = (idx, id) => React.createElement(SlotPicker, { key: `SUP-${idx}`, jugadorId: id, disabledIds: seleccionados, players: players, teams: teams, elegiblesIds: elegiblesIds, statsMap: statsMap, placeholder: "Suplente", onPick: (v) => setSlot("SUP", 0, idx, v) });
     const sinPartidos = jornadasPeriodo.every((j) => !j.partidos || !j.partidos.some((p) => p.jugado));
     return (React.createElement("div", { className: "space-y-3" },
         React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" },
             React.createElement("h2", { className: "text-lg font-black" }, "\uD83C\uDFC6 XI Ideal del Torneo"),
-            React.createElement("select", { value: formacion, onChange: (e) => setFormacion(e.target.value) }, Object.keys(FORMACIONES_XI).map((f) => React.createElement("option", { key: f, value: f }, f)))),
+            React.createElement("select", { value: formacion, onChange: (e) => cambiarFormacion(e.target.value) }, Object.keys(FORMACIONES_XI).map((f) => React.createElement("option", { key: f, value: f }, f)))),
         React.createElement("div", { className: "tabs-even" }, PERIODOS.map((p) => React.createElement("button", { key: p.id, type: "button", disabled: p.id === "liguilla" && !fases.liguilla.length, onClick: () => setPeriodo(p.id), className: "text-xs font-bold px-3 py-1.5 rounded-full disabled:opacity-40", style: periodo === p.id ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, p.label))),
-        React.createElement("p", { className: "text-xs text-zinc-500" }, "Se arma autom\u00E1ticamente eligiendo, para cada puesto de la formaci\u00F3n, al jugador con mejor score promedio (Score, Goles, Asistencias, etc.) acumulado en el per\u00EDodo seleccionado, siempre que haya sumado minutos en al menos un partido."),
+        React.createElement("p", { className: "text-xs text-zinc-500" }, "Cada per\u00EDodo (Torneo completo, Apertura, Clausura y Liguilla) tiene su propio XI Ideal, completamente independiente de los dem\u00E1s: eleg\u00EDlo a mano tocando cada espacio, entre los jugadores que sumaron minutos en ese per\u00EDodo. \"Auto-armar\" es solo un punto de partida opcional (mejores promedios) que despu\u00E9s pod\u00E9s seguir ajustando manualmente."),
         sinPartidos ? React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay partidos jugados en ", activo.label, ".") : (React.createElement(React.Fragment, null,
             React.createElement("div", { className: "card2 p-3 flex items-center justify-between flex-wrap gap-2 text-xs font-semibold text-zinc-500" },
                 React.createElement("span", null,
@@ -3131,18 +3183,20 @@ function XiIdealTorneo({ fases, todasLasJornadas, teams, players, vecesXi }) {
                     "/11 titulares \u00B7 ",
                     seleccionadosSup.length,
                     "/5 suplentes \u00B7 ",
-                    statsMap.size,
+                    elegiblesIds.size,
                     " jugadores con minutos en ",
                     activo.label),
                 React.createElement("div", { className: "flex items-center gap-2" },
                     seleccionadosXi.length > 0 && React.createElement("span", { style: { color: "#8F9500" } },
                         "\u2B50 Valoraci\u00F3n del XI: ",
                         avgValoracion(jugadoresXi).toFixed(1)),
-                    seleccionadosXi.length > 0 && React.createElement(ExportarXiBoton, { xi: xi, formacion: formacion, titulo: `Torneo \u2014 ${activo.label}`, players: players, teams: teams, statsMap: statsMap }))),
-            React.createElement(FormacionField, { lineasRoles: lineasRoles, filas: xi.filas, renderSlot: renderSlot, renderPT: renderPT }),
+                    React.createElement("button", { type: "button", onClick: autoArmar, className: "text-[10px] font-bold px-2 py-1 rounded-full bg-zinc-100 hover:bg-zinc-200" }, "\u26A1 Auto-armar"),
+                    (seleccionadosXi.length > 0 || seleccionadosSup.length > 0) && React.createElement("button", { type: "button", onClick: limpiarXi, className: "text-[10px] font-bold px-2 py-1 rounded-full bg-zinc-100 hover:bg-zinc-200" }, "\uD83E\uDDF9 Vaciar"),
+                    seleccionadosXi.length > 0 && React.createElement(ExportarXiBoton, { xi: { ...xi, suplentes: suplentes }, formacion: formacion, titulo: `Torneo \u2014 ${activo.label}`, players: players, teams: teams, statsMap: statsMap }))),
+            React.createElement(FormacionField, { lineasRoles: lineasRoles, filas: xi.filas, renderSlot: renderSlotEditable, renderPT: renderPTEditable }),
             React.createElement("div", { className: "rounded-2xl", style: { background: "linear-gradient(180deg,#1c1d22,#0e0f12)", border: "1px solid #2c2c30", padding: "14px 12px" } },
                 React.createElement("div", { className: "text-white text-[10px] font-bold uppercase tracking-wide mb-2 opacity-70 text-center" }, "Suplentes"),
-                React.createElement("div", { className: "flex flex-wrap gap-2 justify-center" }, (xi.suplentes || []).map((id, i) => React.createElement(SlotDisplay, { key: `SUP-${i}`, jugadorId: id, players: players, teams: teams, statsMap: statsMap, placeholder: "Suplente" })))),
+                React.createElement("div", { className: "flex flex-wrap gap-2 justify-center" }, suplentes.map((id, i) => renderSuplente(i, id)))),
             jugadoresXi.length > 0 && React.createElement("div", { className: "card2" },
                 React.createElement("div", { className: "section-header px-4 py-2.5" }, `Titulares (stats acumuladas \u2014 ${activo.label})`),
                 React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresXi.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: statsMap, vecesXi: vecesXi })))),
