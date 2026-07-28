@@ -1564,6 +1564,7 @@ function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaG
     const nombreEquipoDe = (p) => { var _a; return ((_a = teams.find((t) => t.id === p.equipoId)) === null || _a === void 0 ? void 0 : _a.nombre) || ""; };
     const goleador = [...players].filter((p) => p.goles > 0).sort((a, b) => b.goles - a.goles || nombreEquipoDe(a).localeCompare(nombreEquipoDe(b)))[0];
     const asistidor = [...players].filter((p) => p.asistencias > 0).sort((a, b) => b.asistencias - a.asistencias || nombreEquipoDe(a).localeCompare(nombreEquipoDe(b)))[0];
+    const gaLider = [...players].filter((p) => (p.goles || 0) + (p.asistencias || 0) > 0).sort((a, b) => ((b.goles || 0) + (b.asistencias || 0)) - ((a.goles || 0) + (a.asistencias || 0)) || (b.goles || 0) - (a.goles || 0) || nombreEquipoDe(a).localeCompare(nombreEquipoDe(b)))[0];
     const conScore = [...players].filter((p) => p.scores && p.scores.length > 0);
     const mvpScore = conScore.sort((a, b) => avg(b.scores) - avg(a.scores) || nombreEquipoDe(a).localeCompare(nombreEquipoDe(b)))[0];
     const finalIda = fases.liguilla.find((j) => j.numero === 5);
@@ -1604,6 +1605,8 @@ function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaG
                 React.createElement(MediaCard, { icon: "\u26BD", label: "M\u00E1x. goleador", imgSrc: goleador && goleador.foto, value: goleador ? goleador.nombre : "Sin datos", sub: goleador && `${goleador.goles} goles \u00B7 ${nombreEquipoDe(goleador)}`, onClick: () => verJugador("M\u00E1ximo goleador", goleador) })),
             React.createElement("div", { className: "dash-row" },
                 React.createElement(MediaCard, { icon: "\uD83C\uDFAF", label: "M\u00E1x. asistidor", imgSrc: asistidor && asistidor.foto, value: asistidor ? asistidor.nombre : "Sin datos", sub: asistidor && `${asistidor.asistencias} asist. \u00B7 ${nombreEquipoDe(asistidor)}`, onClick: () => verJugador("M\u00E1ximo asistidor", asistidor) })),
+            React.createElement("div", { className: "dash-row" },
+                React.createElement(MediaCard, { icon: "\uD83D\uDD25", label: "Goles + Asistencias", imgSrc: gaLider && gaLider.foto, value: gaLider ? gaLider.nombre : "Sin datos", sub: gaLider && `${(gaLider.goles || 0) + (gaLider.asistencias || 0)} G+A (\u26BD${gaLider.goles || 0} \u00B7 \uD83C\uDD70\uFE0F${gaLider.asistencias || 0}) \u00B7 ${nombreEquipoDe(gaLider)}`, onClick: () => verJugador("Goles + Asistencias", gaLider) })),
             React.createElement("div", { className: "dash-row" },
                 React.createElement(MediaCard, { icon: "\u2B50", label: "MVP (por Score)", imgSrc: mvpScore && mvpScore.foto, value: mvpScore ? mvpScore.nombre : "Sin datos", sub: mvpScore && `${avg(mvpScore.scores).toFixed(1)} \u00B7 ${nombreEquipoDe(mvpScore)}`, onClick: () => verJugador("MVP (por Score)", mvpScore) }))),
         React.createElement("div", null,
@@ -3176,12 +3179,15 @@ function Rankings({ players, teams, jornadas }) {
     const tbScore = (a, b) => (b.goles || 0) - (a.goles || 0) || (b.asistencias || 0) - (a.asistencias || 0) || (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b);
     const goleadoresAll = [...players].filter((p) => p.goles > 0).sort((a, b) => b.goles - a.goles || tbRanking(a, b));
     const asistidoresAll = [...players].filter((p) => p.asistencias > 0).sort((a, b) => b.asistencias - a.asistencias || tbRanking(a, b));
+    // Regla G+A: participación directa en gol. Empates por goles, luego asistencias, luego el resto de la Regla E.
+    const gaAll = [...players].filter((p) => (p.goles || 0) + (p.asistencias || 0) > 0).sort((a, b) => ((b.goles || 0) + (b.asistencias || 0)) - ((a.goles || 0) + (a.asistencias || 0)) || (b.goles || 0) - (a.goles || 0) || tbRanking(a, b));
     const golesRecibidosAll = [...players].filter((p) => p.posicion === "PT" && p.partidosJugados > 0).sort((a, b) => (a.golesRecibidos || 0) - (b.golesRecibidos || 0) || tbRanking(a, b));
     const scoreTopAll = [...players].filter((p) => p.scores.length > 0).sort((a, b) => avg(b.scores) - avg(a.scores) || tbScore(a, b));
     const masMvpsAll = [...players].filter((p) => (p.mvps || 0) > 0).sort((a, b) => (b.mvps || 0) - (a.mvps || 0) || tbRanking(a, b));
     const masCarosAll = [...players].filter((p) => p.valorMercado > 0).sort((a, b) => b.valorMercado - a.valorMercado || tbRanking(a, b));
     const goleadores = goleadoresAll.slice(0, 15);
     const asistidores = asistidoresAll.slice(0, 15);
+    const ga = gaAll.slice(0, 15);
     const golesRecibidos = golesRecibidosAll.slice(0, 15);
     const scoreTop = scoreTopAll.slice(0, 15);
     const masMvps = masMvpsAll.slice(0, 15);
@@ -3193,6 +3199,7 @@ function Rankings({ players, teams, jornadas }) {
         subTab === "jugadores" && React.createElement("div", { className: "grid md:grid-cols-2 gap-3" },
             React.createElement(TablaRanking, { titulo: "Goleadores", icon: "\uD83C\uDFC6", rows: goleadores, allRows: goleadoresAll, cols: (p) => p.goles, teamName: teamName }),
             React.createElement(TablaRanking, { titulo: "Asistidores", icon: "\u2B50", rows: asistidores, allRows: asistidoresAll, cols: (p) => p.asistencias, teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Goles + Asistencias", icon: "\uD83D\uDD25", rows: ga, allRows: gaAll, cols: (p) => (p.goles || 0) + (p.asistencias || 0), extra: (p) => `\u26BD${p.goles || 0} \u00B7 \uD83C\uDD70\uFE0F${p.asistencias || 0}`, teamName: teamName }),
             React.createElement(TablaRanking, { titulo: "Menos goles recibidos (porteros)", icon: "\uD83E\uDDE4", rows: golesRecibidos, allRows: golesRecibidosAll, cols: (p) => p.golesRecibidos || 0, teamName: teamName }),
             React.createElement(TablaRanking, { titulo: "Mejor score promedio", icon: "\u2B50", rows: scoreTop, allRows: scoreTopAll, cols: (p) => avg(p.scores).toFixed(1), teamName: teamName }),
             React.createElement(TablaRanking, { titulo: "M\u00E1s MVPs", icon: "\uD83C\uDFC5", rows: masMvps, allRows: masMvpsAll, cols: (p) => p.mvps || 0, teamName: teamName }),
