@@ -1018,24 +1018,51 @@ function calcularTablaAnterior(teams, gruposDeJornadas) {
 }
 // Arma la lista de 4 clasificados "parciales" (1° y 2° de Apertura y Clausura) y los 4 clasificados
 // por tabla general, saltando cualquier equipo que ya haya entrado por la vía parcial (el cupo pasa al siguiente).
+// Si un equipo clasifica dos veces por la vía parcial (p. ej. es 1° en Apertura y también 1° en Clausura),
+// el cupo repetido no bloquea la liguilla: se le asigna directo al siguiente equipo disponible en la tabla general.
 function calcularClasificadosLiguilla(tablaApertura, tablaClausura, tablaGeneral) {
+    const usados = new Set();
+    const siguienteDeGeneral = () => {
+        for (const row of tablaGeneral) {
+            if (!usados.has(row.id))
+                return row.id;
+        }
+        return null;
+    };
+    const resolverParcial = (label, equipo) => {
+        if (equipo && !usados.has(equipo.id)) {
+            usados.add(equipo.id);
+            return { label, id: equipo.id, sustituto: false };
+        }
+        // Cupo repetido (o sin equipo definido): pasa al siguiente disponible en la tabla general.
+        const id = siguienteDeGeneral();
+        if (id)
+            usados.add(id);
+        return { label, id, sustituto: true };
+    };
     const parciales = [
-        { label: "1\u00B0 Apertura", id: tablaApertura[0] ? tablaApertura[0].id : null },
-        { label: "2\u00B0 Apertura", id: tablaApertura[1] ? tablaApertura[1].id : null },
-        { label: "1\u00B0 Clausura", id: tablaClausura[0] ? tablaClausura[0].id : null },
-        { label: "2\u00B0 Clausura", id: tablaClausura[1] ? tablaClausura[1].id : null },
+        resolverParcial("1\u00B0 Apertura", tablaApertura[0]),
+        resolverParcial("2\u00B0 Apertura", tablaApertura[1]),
+        resolverParcial("1\u00B0 Clausura", tablaClausura[0]),
+        resolverParcial("2\u00B0 Clausura", tablaClausura[1]),
     ];
-    const idsParciales = new Set(parciales.map((p) => p.id).filter(Boolean));
-    const repetidos = parciales.filter((p, i) => p.id && parciales.findIndex((q) => q.id === p.id) !== i).length > 0;
     const generalClasificados = [];
     for (const row of tablaGeneral) {
         if (generalClasificados.length >= 4)
             break;
-        if (idsParciales.has(row.id))
+        if (usados.has(row.id))
             continue;
         generalClasificados.push(row.id);
+        usados.add(row.id);
     }
-    return { parciales, generalClasificados, repetidos, completo: idsParciales.size === 4 && !repetidos && generalClasificados.length === 4 };
+    const huboSustitutos = parciales.some((p) => p.sustituto);
+    return {
+        parciales,
+        generalClasificados,
+        repetidos: false,
+        huboSustitutos,
+        completo: parciales.every((p) => p.id) && generalClasificados.length === 4,
+    };
 }
 // Arma los 4 cruces de Cuartos de Final según la regla acordada:
 // 1° Clausura vs 4° General · 1° Apertura vs 3° General · 2° Clausura vs 2° General · 2° Apertura vs 1° General.
@@ -1945,9 +1972,9 @@ function LiguillaView({ teams, tablaApertura, tablaClausura, tablaGeneral, fases
         React.createElement("div", { className: "card2 p-4" },
             React.createElement("div", { className: "font-bold mb-2 text-[#8F9500]" }, "Clasificados a la Liguilla"),
             !clasificados.completo && React.createElement("div", { className: "text-xs text-zinc-500" }, "Todav\u00EDa faltan resultados en Apertura o Clausura para definir los 8 clasificados."),
-            clasificados.repetidos && React.createElement("div", { className: "text-xs text-red-600 mb-2" }, "\u26A0\uFE0F Hay un equipo repetido entre los clasificados directos de Apertura/Clausura \u2014 revis\u00E1 la tabla manualmente."),
-            clasificados.completo && React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs" }, [...clasificados.parciales.map((p) => ({ label: p.label, id: p.id })), ...clasificados.generalClasificados.map((id, i) => ({ label: `${i + 1}\u00B0 Gral`, id }))].map((c, i) => React.createElement("div", { key: i, className: "bg-zinc-50 rounded-lg p-2" },
-                React.createElement("div", { className: "text-[10px] text-zinc-400 font-bold" }, c.label),
+            clasificados.huboSustitutos && React.createElement("div", { className: "text-xs text-amber-600 mb-2" }, "\u2139\uFE0F Hab\u00EDa un equipo repetido entre los clasificados directos de Apertura/Clausura \u2014 el cupo pas\u00F3 autom\u00E1ticamente al siguiente en la tabla general (marcado con \u2b50)."),
+            clasificados.completo && React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs" }, [...clasificados.parciales.map((p) => ({ label: p.label, id: p.id, sustituto: p.sustituto })), ...clasificados.generalClasificados.map((id, i) => ({ label: `${i + 1}\u00B0 Gral`, id, sustituto: false }))].map((c, i) => React.createElement("div", { key: i, className: "bg-zinc-50 rounded-lg p-2" },
+                React.createElement("div", { className: "text-[10px] text-zinc-400 font-bold" }, c.label + (c.sustituto ? " \u2b50" : "")),
                 React.createElement("div", { className: "font-semibold" }, nombre(c.id))))),
             React.createElement("div", { className: "flex gap-2 mt-3" },
                 React.createElement("button", { type: "button", disabled: !clasificados.completo, onClick: generar, className: "btn-olive text-xs px-3 py-2 rounded-lg font-semibold disabled:opacity-40" }, yaGenerada ? "\uD83D\uDD01 Regenerar cuartos" : "\uD83C\uDFC6 Generar Liguilla"),
