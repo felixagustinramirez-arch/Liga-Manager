@@ -347,6 +347,9 @@
   .wide-card-label { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#8a8a7e; font-weight:700; margin-bottom:3px; }
   .wide-card-value { font-size:14px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .wide-card-sub { font-size:12px; color:#8F9500; font-weight:700; margin-top:2px; }
+  .wide-card-clickable { cursor:pointer; transition:border-color .15s, transform .1s; }
+  .wide-card-clickable:hover { border-color:#B4BC00; }
+  .wide-card-clickable:active { transform:scale(.98); }
   .dash-extra-btn { flex:1 1 0%; text-align:center; font-size:13px; font-weight:700; padding:12px 10px; border-radius:12px; background:#f0f0ea; color:#4a4a42; border:1px solid #e3e3dc; cursor:pointer; }
   .dash-extra-btn.btn-olive { border-color:transparent; }
   .dash-extra-btn:hover { background:#e6e6de; }
@@ -1489,14 +1492,69 @@ function InfoCard({ icon, label, children }) {
         React.createElement("div", { className: "info-card-value" }, valor),
         sub && React.createElement("div", { className: "info-card-sub" }, sub));
 }
-function MediaCard({ icon, label, imgSrc, value, sub }) {
-    return React.createElement("div", { className: "wide-card" },
+function MediaCard({ icon, label, imgSrc, value, sub, onClick }) {
+    return React.createElement("div", { className: "wide-card" + (onClick ? " wide-card-clickable" : ""), onClick: onClick, role: onClick ? "button" : undefined, tabIndex: onClick ? 0 : undefined },
         React.createElement("div", { className: "wide-card-media" },
             imgSrc ? React.createElement("img", { src: imgSrc }) : React.createElement(Icon, { size: 22 }, icon)),
         React.createElement("div", { className: "wide-card-body" },
             React.createElement("div", { className: "wide-card-label" }, label),
             React.createElement("div", { className: "wide-card-value" }, value),
             sub && React.createElement("div", { className: "wide-card-sub" }, sub)));
+}
+// Miniventana de estadísticas al tocar una tarjeta de Líderes/Destacados en el Dashboard.
+// tipo "equipo": muestra PJ/PG/PE/PP/GF/GC/DG/Pts a partir de una fila de tabla.
+// tipo "jugador": muestra goles/asistencias/PJ/minutos/tarjetas/score a partir del objeto jugador.
+function StatMini({ label, value }) {
+    return React.createElement("div", { className: "bg-zinc-50 rounded-lg p-2 text-center" },
+        React.createElement("div", { className: "text-[10px] text-zinc-400 font-bold uppercase" }, label),
+        React.createElement("div", { className: "font-black text-sm" }, value));
+}
+function DetalleDashboardSheet({ detalle, onClose }) {
+    if (!detalle)
+        return null;
+    const { tipo, titulo } = detalle;
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex justify-between items-center mb-3" },
+                React.createElement("span", { className: "font-black text-lg" }, titulo),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            tipo === "equipo" && (() => {
+                const t = detalle.equipo;
+                return React.createElement("div", { className: "space-y-3" },
+                    React.createElement("div", { className: "flex items-center gap-3" },
+                        t.escudo ? React.createElement("img", { src: t.escudo, className: "w-14 h-14 rounded-full object-cover" }) : React.createElement("div", { className: "avatar-ph w-14 h-14 rounded-full text-sm font-bold" }, t.nombre ? t.nombre[0] : "?"),
+                        React.createElement("div", null,
+                            React.createElement("div", { className: "font-black text-base" }, t.nombre || "\u2014"),
+                            detalle.sub && React.createElement("div", { className: "text-xs text-zinc-500" }, detalle.sub))),
+                    t.pj !== undefined ? React.createElement("div", { className: "grid grid-cols-4 gap-2 text-xs" },
+                        React.createElement(StatMini, { label: "PJ", value: t.pj }),
+                        React.createElement(StatMini, { label: "PG", value: t.pg }),
+                        React.createElement(StatMini, { label: "PE", value: t.pe }),
+                        React.createElement(StatMini, { label: "PP", value: t.pp }),
+                        React.createElement(StatMini, { label: "GF", value: t.gf }),
+                        React.createElement(StatMini, { label: "GC", value: t.gc }),
+                        React.createElement(StatMini, { label: "DG", value: t.dg }),
+                        React.createElement(StatMini, { label: "Pts", value: t.pts })) : React.createElement("div", { className: "text-xs text-zinc-500" }, "Todav\u00EDa sin partidos registrados en esta fase."));
+            })(),
+            tipo === "jugador" && (() => {
+                const p = detalle.jugador;
+                return React.createElement("div", { className: "space-y-3" },
+                    React.createElement("div", { className: "flex items-center gap-3" },
+                        p.foto ? React.createElement("img", { src: p.foto, className: "w-14 h-14 rounded-full object-cover" }) : React.createElement("div", { className: "avatar-ph w-14 h-14 rounded-full text-sm font-bold" }, p.dorsal),
+                        React.createElement("div", null,
+                            React.createElement("div", { className: "font-black text-base" }, p.nombre),
+                            React.createElement("div", { className: "text-xs text-zinc-500" }, `#${p.dorsal} \u00B7 ${p.posicion} \u00B7 GRL ${p.valoracion} \u00B7 ${detalle.equipoNombre || ""}`))),
+                    React.createElement("div", { className: "grid grid-cols-4 gap-2 text-xs" },
+                        React.createElement(StatMini, { label: "Goles", value: p.goles || 0 }),
+                        React.createElement(StatMini, { label: "Asist.", value: p.asistencias || 0 }),
+                        React.createElement(StatMini, { label: "PJ", value: p.partidosJugados || 0 }),
+                        React.createElement(StatMini, { label: "Min.", value: p.minutosJugados || 0 }),
+                        React.createElement(StatMini, { label: "\uD83D\uDFE8", value: p.amarillas || 0 }),
+                        React.createElement(StatMini, { label: "\uD83D\uDFE5", value: p.rojas || 0 }),
+                        React.createElement(StatMini, { label: "MVPs", value: p.mvps || 0 }),
+                        React.createElement(StatMini, { label: "Score", value: p.scores && p.scores.length ? avg(p.scores).toFixed(1) : "\u2014" })));
+            })()));
 }
 function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaGeneral, setTab }) {
     const contarJugados = (jornadas) => jornadas.reduce((a, j) => a + j.partidos.filter((p) => p.jugado).length, 0);
@@ -1512,7 +1570,12 @@ function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaG
     const finalVuelta = fases.liguilla.find((j) => j.numero === 6);
     const campeonId = finalIda && finalVuelta ? ganadorSerie(finalIda.partidos[0], finalVuelta.partidos[0]) : null;
     const campeon = campeonId ? teams.find((t) => t.id === campeonId) : null;
+    const campeonTabla = campeonId ? tablaGeneral.find((t) => t.id === campeonId) : null;
+    const [detalle, setDetalle] = useState(null);
+    const verEquipo = (titulo, equipo, sub) => equipo && setDetalle({ tipo: "equipo", titulo, equipo, sub });
+    const verJugador = (titulo, jugador) => jugador && setDetalle({ tipo: "jugador", titulo, jugador, equipoNombre: nombreEquipoDe(jugador) });
     return (React.createElement("div", { className: "space-y-4" },
+        detalle && React.createElement(DetalleDashboardSheet, { detalle: detalle, onClose: () => setDetalle(null) }),
         React.createElement("div", null,
             React.createElement("div", { className: "dash-section-title" },
                 React.createElement(Icon, { size: 16 }, "\uD83D\uDCC1"),
@@ -1527,22 +1590,22 @@ function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaG
                 React.createElement(Icon, { size: 16 }, "\uD83D\uDCCA"),
                 " L\u00EDderes"),
             React.createElement("div", { className: "dash-row-2" },
-                React.createElement(MediaCard, { icon: "\uD83E\uDD47", label: "L\u00EDder Apertura", imgSrc: tablaApertura[0] && tablaApertura[0].escudo, value: tablaApertura[0] ? tablaApertura[0].nombre : "\u2014", sub: tablaApertura[0] ? `${tablaApertura[0].pts} pts` : null }),
-                React.createElement(MediaCard, { icon: "\uD83E\uDD47", label: "L\u00EDder Clausura", imgSrc: tablaClausura[0] && tablaClausura[0].escudo, value: tablaClausura[0] ? tablaClausura[0].nombre : "\u2014", sub: tablaClausura[0] ? `${tablaClausura[0].pts} pts` : null })),
+                React.createElement(MediaCard, { icon: "\uD83E\uDD47", label: "L\u00EDder Apertura", imgSrc: tablaApertura[0] && tablaApertura[0].escudo, value: tablaApertura[0] ? tablaApertura[0].nombre : "\u2014", sub: tablaApertura[0] ? `${tablaApertura[0].pts} pts` : null, onClick: () => verEquipo("L\u00EDder Apertura", tablaApertura[0], "Tabla Apertura") }),
+                React.createElement(MediaCard, { icon: "\uD83E\uDD47", label: "L\u00EDder Clausura", imgSrc: tablaClausura[0] && tablaClausura[0].escudo, value: tablaClausura[0] ? tablaClausura[0].nombre : "\u2014", sub: tablaClausura[0] ? `${tablaClausura[0].pts} pts` : null, onClick: () => verEquipo("L\u00EDder Clausura", tablaClausura[0], "Tabla Clausura") })),
             React.createElement("div", { className: "dash-row" },
-                React.createElement(MediaCard, { icon: "\uD83D\uDCCA", label: "L\u00EDder General", imgSrc: tablaGeneral[0] && tablaGeneral[0].escudo, value: tablaGeneral[0] ? tablaGeneral[0].nombre : "\u2014", sub: tablaGeneral[0] ? `${tablaGeneral[0].pts} pts` : null })),
+                React.createElement(MediaCard, { icon: "\uD83D\uDCCA", label: "L\u00EDder General", imgSrc: tablaGeneral[0] && tablaGeneral[0].escudo, value: tablaGeneral[0] ? tablaGeneral[0].nombre : "\u2014", sub: tablaGeneral[0] ? `${tablaGeneral[0].pts} pts` : null, onClick: () => verEquipo("L\u00EDder General", tablaGeneral[0], "Tabla General (Apertura + Clausura)") })),
             React.createElement("div", { className: "dash-row" },
-                React.createElement(MediaCard, { icon: "\uD83C\uDFC6", label: "Campe\u00F3n Liguilla", imgSrc: campeon && campeon.escudo, value: campeon ? campeon.nombre : "A\u00FAn no definido" }))),
+                React.createElement(MediaCard, { icon: "\uD83C\uDFC6", label: "Campe\u00F3n Liguilla", imgSrc: campeon && campeon.escudo, value: campeon ? campeon.nombre : "A\u00FAn no definido", onClick: () => verEquipo("Campe\u00F3n Liguilla", campeonTabla || campeon, "Campe\u00F3n de la Liguilla") }))),
         React.createElement("div", null,
             React.createElement("div", { className: "dash-section-title" },
                 React.createElement(Icon, { size: 16 }, "\u2B50"),
                 " Destacados"),
             React.createElement("div", { className: "dash-row" },
-                React.createElement(MediaCard, { icon: "\u26BD", label: "M\u00E1x. goleador", imgSrc: goleador && goleador.foto, value: goleador ? goleador.nombre : "Sin datos", sub: goleador && `${goleador.goles} goles \u00B7 ${nombreEquipoDe(goleador)}` })),
+                React.createElement(MediaCard, { icon: "\u26BD", label: "M\u00E1x. goleador", imgSrc: goleador && goleador.foto, value: goleador ? goleador.nombre : "Sin datos", sub: goleador && `${goleador.goles} goles \u00B7 ${nombreEquipoDe(goleador)}`, onClick: () => verJugador("M\u00E1ximo goleador", goleador) })),
             React.createElement("div", { className: "dash-row" },
-                React.createElement(MediaCard, { icon: "\uD83C\uDFAF", label: "M\u00E1x. asistidor", imgSrc: asistidor && asistidor.foto, value: asistidor ? asistidor.nombre : "Sin datos", sub: asistidor && `${asistidor.asistencias} asist. \u00B7 ${nombreEquipoDe(asistidor)}` })),
+                React.createElement(MediaCard, { icon: "\uD83C\uDFAF", label: "M\u00E1x. asistidor", imgSrc: asistidor && asistidor.foto, value: asistidor ? asistidor.nombre : "Sin datos", sub: asistidor && `${asistidor.asistencias} asist. \u00B7 ${nombreEquipoDe(asistidor)}`, onClick: () => verJugador("M\u00E1ximo asistidor", asistidor) })),
             React.createElement("div", { className: "dash-row" },
-                React.createElement(MediaCard, { icon: "\u2B50", label: "MVP (por Score)", imgSrc: mvpScore && mvpScore.foto, value: mvpScore ? mvpScore.nombre : "Sin datos", sub: mvpScore && `${avg(mvpScore.scores).toFixed(1)} \u00B7 ${nombreEquipoDe(mvpScore)}` }))),
+                React.createElement(MediaCard, { icon: "\u2B50", label: "MVP (por Score)", imgSrc: mvpScore && mvpScore.foto, value: mvpScore ? mvpScore.nombre : "Sin datos", sub: mvpScore && `${avg(mvpScore.scores).toFixed(1)} \u00B7 ${nombreEquipoDe(mvpScore)}`, onClick: () => verJugador("MVP (por Score)", mvpScore) }))),
         React.createElement("div", null,
             React.createElement("div", { className: "dash-section-title" },
                 React.createElement(Icon, { size: 16 }, "\uD83E\uDDF0"),
