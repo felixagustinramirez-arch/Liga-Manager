@@ -583,7 +583,33 @@ function armarXiAutomatico(players, statsMap, nombreFormacion) {
         suplentes.push(null);
     return { formacion: nombreFormacion, PT, filas, suplentes };
 }
-const uid = (p = "id") => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+// Cuenta, para cada arquero, en cuántos partidos de un período (Apertura, Clausura, Liguilla o Torneo completo)
+// dejó su valla invicta (no recibió goles mientras estuvo en cancha, según su intervalo real de minutos jugados).
+// Reutiliza intervaloEnCancha / golesRecibidosEnIntervalo, la misma lógica que ya usa golesRecibidos acumulado.
+function vallasInvictasPorPeriodo(jornadas, players) {
+    const posicionPorId = new Map(players.map((p) => [p.id, p.posicion]));
+    const conteo = new Map();
+    (jornadas || []).forEach((jornada) => {
+        (jornada.partidos || []).forEach((partido) => {
+            if (!partido.jugado || !partido.matchData)
+                return;
+            const { localXI, visXI, eventos, subs } = partido.matchData;
+            const ids = new Set([...localXI, ...visXI]);
+            subs.forEach((s) => ids.add(s.entra));
+            ids.forEach((id) => {
+                if (posicionPorId.get(id) !== "PT")
+                    return;
+                const intervalo = intervaloEnCancha(id, localXI, visXI, subs);
+                if (!intervalo || intervalo.fin - intervalo.inicio <= 0)
+                    return;
+                const recibidos = golesRecibidosEnIntervalo(intervalo.equipo, intervalo.inicio, intervalo.fin, eventos);
+                if (recibidos === 0)
+                    conteo.set(id, (conteo.get(id) || 0) + 1);
+            });
+        });
+    });
+    return conteo;
+}
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 const fmtMoney = (n) => "$" + Math.round(n || 0).toLocaleString("es-ES");
 const avg = (arr) => (arr && arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
@@ -1350,7 +1376,9 @@ function TorneoApp() {
         { id: "estadisticas", label: "Estadísticas", icon: "📈" },
         { id: "xiideal", label: "XI de la Jornada", icon: "🌟" },
         { id: "xiidealtorneo", label: "XI Ideal del Torneo", icon: "🏆" },
+        { id: "premios", label: "Premios de Temporada", icon: "🏅" },
         { id: "mercado", label: "Mercado", icon: "🛒" },
+        { id: "jugadores", label: "Jugadores", icon: "🔍" },
         { id: "sanciones", label: "Sanciones", icon: "🛡️" },
         { id: "equipos", label: "Equipos", icon: "👕" },
         { id: "extras", label: "Extras", icon: "🧰" },
@@ -1453,7 +1481,9 @@ function TorneoApp() {
                 tab === "partido" && React.createElement(JugarPartido, { key: faseActiva, teams: teams, players: players, setPlayers: setPlayers, jornadas: jornadasFase, setJornadas: setJornadasFase, setTeams: setTeams, draft: draftPartido, setDraft: setDraftPartido, faseActiva: faseActiva }),
                 tab === "xiideal" && React.createElement(XiIdealJornada, { key: faseActiva, jornadas: jornadasFase, setJornadas: setJornadasFase, teams: teams, players: players, vecesXi: vecesXi }),
                 tab === "xiidealtorneo" && React.createElement(XiIdealTorneo, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players, vecesXi: vecesXi, xiTorneo: xiTorneo, setXiTorneo: setXiTorneo }),
+                tab === "premios" && React.createElement(PremiosView, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players }),
                 tab === "mercado" && React.createElement(Mercado, { teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, transfers: transfers, setTransfers: setTransfers, abierto: mercadoAbierto, aperturaCompleta: aperturaCompleta, clausuraCompleta: clausuraCompleta, clausuraIniciada: clausuraIniciada, liguillaIniciada: liguillaIniciada }),
+                tab === "jugadores" && React.createElement(JugadoresView, { teams: teams, players: players, setPlayers: setPlayers }),
                 tab === "rankings" && React.createElement(Rankings, { players: players, teams: teams, jornadas: todasLasJornadas }),
                 tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
                 tab === "sanciones" && React.createElement(Sanciones, { players: players, setPlayers: setPlayers, teams: teams }),
@@ -1887,6 +1917,99 @@ function Field({ label, children }) {
         React.createElement("span", { className: "text-zinc-500 font-medium" }, label),
         children);
 }
+// ---------- Jugadores: lista global con filtros de búsqueda ----------
+// Lista a todos los jugadores del torneo (de cualquier equipo, más los agentes libres) y permite acotarla
+// por nombre, posición, rango de GRL, rango de precio de mercado y si es agente libre o de un equipo puntual.
+function JugadoresView({ teams, players, setPlayers }) {
+    const [busqueda, setBusqueda] = useState("");
+    const [filtroPos, setFiltroPos] = useState("");
+    const [grlMin, setGrlMin] = useState("");
+    const [grlMax, setGrlMax] = useState("");
+    const [precioMin, setPrecioMin] = useState("");
+    const [precioMax, setPrecioMax] = useState("");
+    const [filtroEquipo, setFiltroEquipo] = useState("");
+    const [editPlayerId, setEditPlayerId] = useState(null);
+    const nombreEquipoDe = (p) => { var _a; return ((_a = teams.find((t) => t.id === p.equipoId)) === null || _a === void 0 ? void 0 : _a.nombre) || null; };
+    const hayFiltros = busqueda || filtroPos || grlMin !== "" || grlMax !== "" || precioMin !== "" || precioMax !== "" || filtroEquipo;
+    const limpiarFiltros = () => { setBusqueda(""); setFiltroPos(""); setGrlMin(""); setGrlMax(""); setPrecioMin(""); setPrecioMax(""); setFiltroEquipo(""); };
+    const filtrados = players.filter((p) => {
+        if (busqueda.trim() && !p.nombre.toLowerCase().includes(busqueda.trim().toLowerCase()))
+            return false;
+        if (filtroPos && p.posicion !== filtroPos)
+            return false;
+        if (grlMin !== "" && p.valoracion < Number(grlMin))
+            return false;
+        if (grlMax !== "" && p.valoracion > Number(grlMax))
+            return false;
+        if (precioMin !== "" && (p.valorMercado || 0) < Number(precioMin))
+            return false;
+        if (precioMax !== "" && (p.valorMercado || 0) > Number(precioMax))
+            return false;
+        if (filtroEquipo === "LIBRE" && p.equipoId)
+            return false;
+        if (filtroEquipo && filtroEquipo !== "LIBRE" && p.equipoId !== filtroEquipo)
+            return false;
+        return true;
+    }).sort((a, b) => b.valoracion - a.valoracion || a.nombre.localeCompare(b.nombre));
+    const editPlayer = players.find((p) => p.id === editPlayerId);
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "flex items-center justify-between" },
+            React.createElement("h2", { className: "text-lg font-black" }, "\uD83D\uDD0D Jugadores"),
+            React.createElement("span", { className: "chip-total" },
+                filtrados.length,
+                "/",
+                players.length)),
+        React.createElement("div", { className: "card2 p-3 space-y-2" },
+            React.createElement("input", { className: "w-full", placeholder: "Buscar por nombre\u2026", value: busqueda, onChange: (e) => setBusqueda(e.target.value) }),
+            React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs" },
+                React.createElement(Field, { label: "Posici\u00F3n" },
+                    React.createElement("select", { className: "w-full", value: filtroPos, onChange: (e) => setFiltroPos(e.target.value) },
+                        React.createElement("option", { value: "" }, "Todas"),
+                        POSICIONES.map((pos) => React.createElement("option", { key: pos, value: pos }, pos)))),
+                React.createElement(Field, { label: "Equipo / Agente Libre" },
+                    React.createElement("select", { className: "w-full", value: filtroEquipo, onChange: (e) => setFiltroEquipo(e.target.value) },
+                        React.createElement("option", { value: "" }, "Todos"),
+                        React.createElement("option", { value: "LIBRE" }, "\uD83C\uDD93 Agentes Libres"),
+                        teams.map((t) => React.createElement("option", { key: t.id, value: t.id }, t.nombre)))),
+                React.createElement(Field, { label: "GRL m\u00EDn." },
+                    React.createElement("input", { type: "number", min: 60, max: 99, className: "w-full", placeholder: "60", value: grlMin, onChange: (e) => setGrlMin(e.target.value) })),
+                React.createElement(Field, { label: "GRL m\u00E1x." },
+                    React.createElement("input", { type: "number", min: 60, max: 99, className: "w-full", placeholder: "99", value: grlMax, onChange: (e) => setGrlMax(e.target.value) })),
+                React.createElement(Field, { label: "Precio m\u00EDn." },
+                    React.createElement("input", { type: "number", min: 0, step: 1000, className: "w-full", placeholder: "$0", value: precioMin, onChange: (e) => setPrecioMin(e.target.value) })),
+                React.createElement(Field, { label: "Precio m\u00E1x." },
+                    React.createElement("input", { type: "number", min: 0, step: 1000, className: "w-full", placeholder: "Sin l\u00EDmite", value: precioMax, onChange: (e) => setPrecioMax(e.target.value) }))),
+            hayFiltros && React.createElement("button", { type: "button", onClick: limpiarFiltros, className: "text-[11px] font-bold text-zinc-500 hover:text-zinc-700" }, "\u2715 Limpiar filtros")),
+        React.createElement("div", { className: "card2" },
+            filtrados.map((p, i) => { const eq = nombreEquipoDe(p); return (React.createElement("button", { key: p.id, onClick: () => setEditPlayerId(p.id), className: `w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-zinc-50 ${i < filtrados.length - 1 ? "row-line" : ""}` },
+                p.foto ? React.createElement("img", { src: p.foto, className: "w-10 h-10 rounded-full object-cover" }) : React.createElement("div", { className: "avatar-ph w-10 h-10 rounded-full text-xs font-bold" }, p.dorsal),
+                React.createElement("div", { className: "flex-1 min-w-0" },
+                    React.createElement("div", { className: "font-medium text-sm flex items-center gap-2" },
+                        p.nombre,
+                        " ",
+                        isComodin(p) && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full", style: { background: "#F4F7DE", color: "#8F9500" } }, "COMOD\u00CDN"),
+                        p.sancionJornadas > 0 && React.createElement(Icon, { size: 12 }, "\uD83D\uDEAB")),
+                    React.createElement("div", { className: "text-xs text-zinc-500 truncate" },
+                        "#",
+                        p.dorsal,
+                        " \u00B7 ",
+                        p.posicion,
+                        " \u00B7 GRL ",
+                        p.valoracion,
+                        " \u00B7 ",
+                        eq ? eq : React.createElement("span", { className: "font-semibold", style: { color: "#8F9500" } }, "\uD83C\uDD93 Agente Libre"))),
+                React.createElement("div", { className: "text-right text-xs text-zinc-500 shrink-0" },
+                    React.createElement("div", { className: "text-[#8F9500] font-semibold" }, fmtMoney(p.valorMercado)),
+                    React.createElement("div", null,
+                        "\u26BD",
+                        p.goles,
+                        " \uD83C\uDD70\uFE0F",
+                        p.asistencias,
+                        p.posicion === "PT" && ` \uD83E\uDDE4${p.golesRecibidos || 0}`)))); }),
+            !filtrados.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, players.length ? "Ning\u00FAn jugador coincide con estos filtros." : "A\u00FAn no hay jugadores cargados.")),
+        editPlayer && (React.createElement(PlayerSheet, { player: editPlayer, onClose: () => setEditPlayerId(null), onChange: (patch) => setPlayers(players.map((p) => { if (p.id !== editPlayer.id)
+                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); } }))));
+}
 // Input numérico "amigable": mientras escribís podés borrar o dejarlo vacío sin que salte a 0/mín/máx.
 // El valor solo se valida y se aplica (clamp incluido) al confirmar (blur o Enter).
 function NumberField({ value, onCommit, min, max, step, className, disabled }) {
@@ -2227,6 +2350,7 @@ function EventoExportCard({ item, find }) {
                 React.createElement("div", { className: "text-white font-semibold" }, j === null || j === void 0 ? void 0 : j.nombre),
                 React.createElement("div", { className: "text-zinc-400 text-xs" }, j && `${POSICION_GRUPO(j.posicion)} · #${j.dorsal}`),
                 item.data.propia && React.createElement("div", { className: "text-zinc-400 text-xs mt-1" }, "En su propia puerta"),
+                item.data.etiqueta && React.createElement("div", { className: "text-[10px] font-bold inline-block mt-1.5 px-2 py-0.5 rounded-full", style: { background: "rgba(255,255,255,.1)", color: "#fff" } }, item.data.etiqueta),
                 a && React.createElement("div", { className: "text-zinc-400 text-xs mt-1" }, `Asisti\u00F3: ${a.nombre}`)));
     }
     if (item.tipo === "tarjeta") {
@@ -2297,6 +2421,205 @@ function ExportarPartidoView({ partido, localTeam, visTeam, localSquad, visSquad
                 React.createElement("div", { className: "text-white font-bold" }, jugadorMvp.nombre),
                 React.createElement("div", { className: "text-zinc-500 text-xs" }, (equipoDe(jugadorMvp.id) === null || equipoDe(jugadorMvp.id) === void 0 ? void 0 : equipoDe(jugadorMvp.id).nombre) || "")),
             !conMarcador.length && React.createElement("div", { className: "text-center text-zinc-500 py-10 text-sm" }, "Este partido no tiene eventos cargados.")));
+}
+// ---------- Tarjeta de resultado (imagen PNG vía Canvas) ----------
+// Genera y permite descargar una tarjeta con escudos, marcador, goleadores y MVP de un partido jugado.
+function cargarImagenTarjeta(src) {
+    return new Promise((resolve) => {
+        if (!src) { resolve(null); return; }
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = src;
+    });
+}
+function dibujarEscudoTarjeta(ctx, img, nombre, cx, cy, r) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    if (img) {
+        const ratio = Math.max((r * 2) / img.width, (r * 2) / img.height);
+        const w = img.width * ratio, h = img.height * ratio;
+        ctx.fillStyle = "#1c1c20";
+        ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+        ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
+    } else {
+        ctx.fillStyle = "#2c2c30";
+        ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+        ctx.fillStyle = "#8F9500";
+        ctx.font = `900 ${Math.round(r * 1.1)}px -apple-system, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText((nombre || "?").slice(0, 1).toUpperCase(), cx, cy + r * 0.06);
+    }
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(255,255,255,.15)";
+    ctx.stroke();
+}
+function truncarTextoTarjeta(ctx, texto, maxWidth) {
+    if (ctx.measureText(texto).width <= maxWidth)
+        return texto;
+    let t = texto;
+    while (t.length > 1 && ctx.measureText(t + "…").width > maxWidth)
+        t = t.slice(0, -1);
+    return t + "…";
+}
+async function dibujarTarjetaPartido(canvas, { localTeam, visTeam, golesLocal, golesVisitante, goleadoresLocal, goleadoresVis, mvpNombre, mvpEquipoNombre, jornadaLabel, fecha }) {
+    const W = 1080, H = 1350;
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, "#1c1d20");
+    grad.addColorStop(1, "#0b0c0e");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#8F9500";
+    ctx.font = "900 34px -apple-system, sans-serif";
+    ctx.fillText("LIGA KONAMI", W / 2, 90);
+    ctx.fillStyle = "rgba(255,255,255,.55)";
+    ctx.font = "600 24px -apple-system, sans-serif";
+    ctx.fillText([jornadaLabel, fecha].filter(Boolean).join(" · ") || "Resultado final", W / 2, 128);
+    ctx.strokeStyle = "rgba(255,255,255,.1)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(80, 160);
+    ctx.lineTo(W - 80, 160);
+    ctx.stroke();
+    const [imgLocal, imgVis] = await Promise.all([cargarImagenTarjeta(localTeam === null || localTeam === void 0 ? void 0 : localTeam.escudo), cargarImagenTarjeta(visTeam === null || visTeam === void 0 ? void 0 : visTeam.escudo)]);
+    const cy = 300, r = 90;
+    dibujarEscudoTarjeta(ctx, imgLocal, localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre, 260, cy, r);
+    dibujarEscudoTarjeta(ctx, imgVis, visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre, W - 260, cy, r);
+    ctx.fillStyle = "#fff";
+    ctx.font = "900 96px -apple-system, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`${golesLocal} - ${golesVisitante}`, W / 2, cy);
+    ctx.font = "700 30px -apple-system, sans-serif";
+    ctx.fillStyle = "#e4e4e7";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(truncarTextoTarjeta(ctx, (localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre) || "Local", 300), 260, cy + r + 46);
+    ctx.fillText(truncarTextoTarjeta(ctx, (visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre) || "Visitante", 300), W - 260, cy + r + 46);
+    let y = 500;
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#8F9500";
+    ctx.font = "900 26px -apple-system, sans-serif";
+    ctx.fillText("⚽ GOLEADORES", 80, y);
+    y += 20;
+    ctx.strokeStyle = "rgba(255,255,255,.1)";
+    ctx.beginPath();
+    ctx.moveTo(80, y);
+    ctx.lineTo(W - 80, y);
+    ctx.stroke();
+    y += 44;
+    const colLocalX = 80, colVisX = W / 2 + 40, colW = W / 2 - 120;
+    const maxFilas = Math.max(goleadoresLocal.length, goleadoresVis.length);
+    ctx.font = "600 27px -apple-system, sans-serif";
+    for (let i = 0; i < maxFilas; i++) {
+        const yy = y + i * 46;
+        const gl = goleadoresLocal[i], gv = goleadoresVis[i];
+        ctx.fillStyle = "#fff";
+        if (gl)
+            ctx.fillText(truncarTextoTarjeta(ctx, `${gl.nombre}${gl.goles > 1 ? " ×" + gl.goles : ""}${gl.propia ? " (pp)" : ""}`, colW), colLocalX, yy);
+        if (gv)
+            ctx.fillText(truncarTextoTarjeta(ctx, `${gv.nombre}${gv.goles > 1 ? " ×" + gv.goles : ""}${gv.propia ? " (pp)" : ""}`, colW), colVisX, yy);
+    }
+    if (!goleadoresLocal.length && !goleadoresVis.length) {
+        ctx.fillStyle = "rgba(255,255,255,.4)";
+        ctx.textAlign = "center";
+        ctx.font = "600 26px -apple-system, sans-serif";
+        ctx.fillText("Sin goles registrados", W / 2, y);
+        ctx.textAlign = "left";
+    }
+    const mvpY = H - 220;
+    ctx.strokeStyle = "rgba(255,255,255,.1)";
+    ctx.beginPath();
+    ctx.moveTo(80, mvpY - 40);
+    ctx.lineTo(W - 80, mvpY - 40);
+    ctx.stroke();
+    if (mvpNombre) {
+        ctx.textAlign = "center";
+        ctx.font = "900 40px -apple-system, sans-serif";
+        ctx.fillStyle = "#F4F7DE";
+        ctx.fillText("🏅 MVP DEL PARTIDO", W / 2, mvpY + 10);
+        ctx.font = "700 34px -apple-system, sans-serif";
+        ctx.fillStyle = "#fff";
+        ctx.fillText(mvpNombre, W / 2, mvpY + 58);
+        if (mvpEquipoNombre) {
+            ctx.font = "500 24px -apple-system, sans-serif";
+            ctx.fillStyle = "rgba(255,255,255,.5)";
+            ctx.fillText(mvpEquipoNombre, W / 2, mvpY + 92);
+        }
+    }
+    ctx.textAlign = "center";
+    ctx.font = "500 20px -apple-system, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,.3)";
+    ctx.fillText("Liga KONAMI", W / 2, H - 40);
+}
+function TarjetaResultadoBoton({ partido, localTeam, visTeam, localSquad, visSquad, matchData, jornadaLabel }) {
+    const [open, setOpen] = useState(false);
+    const [listo, setListo] = useState(false);
+    const canvasRef = useRef(null);
+    useEffect(() => {
+        if (!open)
+            return;
+        setListo(false);
+        const squadCompleto = [...localSquad, ...visSquad];
+        const find = (id) => squadCompleto.find((p) => p.id === id);
+        const { eventos, mvp } = matchData;
+        const golesDe = (lado) => {
+            const conteo = {};
+            (eventos || []).filter((e) => e.equipo === lado).forEach((e) => {
+                const j = find(e.jugador);
+                if (!j)
+                    return;
+                if (!conteo[j.id])
+                    conteo[j.id] = { nombre: j.nombre, goles: 0, propia: false };
+                conteo[j.id].goles += 1;
+                if (e.propia)
+                    conteo[j.id].propia = true;
+            });
+            return Object.values(conteo).sort((a, b) => b.goles - a.goles);
+        };
+        const jugadorMvp = mvp ? find(mvp) : null;
+        const equipoMvp = jugadorMvp ? (jugadorMvp.equipoId === partido.local ? localTeam : visTeam) : null;
+        dibujarTarjetaPartido(canvasRef.current, {
+            localTeam, visTeam,
+            golesLocal: partido.golesLocal, golesVisitante: partido.golesVisitante,
+            goleadoresLocal: golesDe("local"), goleadoresVis: golesDe("visitante"),
+            mvpNombre: jugadorMvp ? jugadorMvp.nombre : null,
+            mvpEquipoNombre: equipoMvp ? equipoMvp.nombre : null,
+            jornadaLabel, fecha: partido.fecha || "",
+        }).then(() => setListo(true));
+    }, [open]);
+    const descargar = () => {
+        const canvas = canvasRef.current;
+        if (!canvas)
+            return;
+        const nombreArchivo = `KONAMI_${(localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre) || "local"}_vs_${(visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre) || "visitante"}.png`.replace(/\s+/g, "_");
+        const link = document.createElement("a");
+        link.download = nombreArchivo;
+        link.href = canvas.toDataURL("image/png");
+        link.click();
+    };
+    return React.createElement(React.Fragment, null,
+        React.createElement("button", { type: "button", onClick: () => setOpen(true), className: "w-full text-sm px-4 py-2.5 rounded-lg font-semibold bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center gap-2" },
+            React.createElement(Icon, { size: 15 }, "\uD83D\uDDBC\uFE0F"),
+            " Tarjeta de resultado (imagen)"),
+        open && React.createElement("div", { className: "export-overlay" },
+            React.createElement("div", { className: "export-noprint sticky top-0 export-bar flex items-center justify-between px-4 py-3 z-10" },
+                React.createElement("button", { onClick: () => setOpen(false), className: "text-white text-sm flex items-center gap-1" }, "\u2039 Cerrar"),
+                React.createElement("button", { onClick: descargar, disabled: !listo, className: "btn-olive text-sm px-4 py-2 rounded-lg font-semibold flex items-center gap-1.5 disabled:opacity-50" },
+                    React.createElement(Icon, { size: 14 }, "\u2B07\uFE0F"),
+                    " Descargar imagen")),
+            React.createElement("div", { className: "max-w-md mx-auto px-3 pb-10" },
+                React.createElement("canvas", { ref: canvasRef, style: { width: "100%", height: "auto", borderRadius: "12px", marginTop: "12px", display: "block" } }),
+                !listo && React.createElement("div", { className: "text-center text-zinc-500 text-sm py-6" }, "Generando tarjeta\u2026"))));
 }
 // ---------- Jugar partido ----------
 function JugarPartido({ teams, players, setPlayers, jornadas, setJornadas, setTeams, draft, setDraft, faseActiva }) {
@@ -2486,7 +2809,9 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
                                 "')")),
                         React.createElement(NumberField, { step: "0.1", min: 0, max: 10, className: "w-14", value: scores[pl.id] != null ? scores[pl.id] : suger, onCommit: (n) => setScores({ ...scores, [pl.id]: n }) })));
                 })))),
-            partido.jugado && React.createElement(ExportarPartidoBoton, { partido, localTeam, visTeam, localSquad, visSquad, matchData: { localXI, visXI, eventos, tarjetas, subs, scores, mvp } }),
+            partido.jugado && React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-2" },
+                React.createElement(ExportarPartidoBoton, { partido, localTeam, visTeam, localSquad, visSquad, matchData: { localXI, visXI, eventos, tarjetas, subs, scores, mvp } }),
+                React.createElement(TarjetaResultadoBoton, { partido, localTeam, visTeam, localSquad, visSquad, matchData: { eventos, mvp }, jornadaLabel: (jornada === null || jornada === void 0 ? void 0 : jornada.nombre) || `Jornada ${jn}` })),
             React.createElement("button", { onClick: guardarPartido, className: "w-full btn-olive py-3 rounded-xl font-bold flex items-center justify-center gap-2" },
                 React.createElement(Icon, { size: 16 }, "\uD83D\uDCBE"),
                 esEdicion ? " Guardar cambios" : " Guardar partido")))));
@@ -2631,21 +2956,25 @@ function EquipoAlineacion({ nombre, squad, team, lineup, setLineup }) {
                 })),
                 !squad.length && React.createElement("div", { className: "text-xs text-zinc-500 p-1" }, "Este equipo no tiene jugadores."))));
 }
+// Etiquetas rápidas y opcionales para describir cómo fue el gol (se guardan en el historial del partido).
+const ETIQUETAS_GOL = ["Cabeza", "Penalti", "Tiro Libre", "Jugada"];
 function EventosPanel({ squad, squadCompleto, eventos, setEventos, localSquad }) {
     const [jugador, setJugador] = useState("");
     const [asistencia, setAsistencia] = useState("");
     const [minuto, setMinuto] = useState(1);
     const [extra, setExtra] = useState(0);
     const [propia, setPropia] = useState(false);
+    const [etiqueta, setEtiqueta] = useState(null);
     const add = () => {
         if (!jugador)
             return;
         const esLocalJugador = !!localSquad.find((p) => p.id === jugador);
         // Un gol en propia se acredita al equipo contrario al del jugador que lo comete.
         const equipo = propia ? (esLocalJugador ? "vis" : "local") : (esLocalJugador ? "local" : "vis");
-        setEventos([...eventos, { id: uid("gol"), equipo, jugador, asistencia: propia ? null : (asistencia || null), minuto, extra, propia }]);
+        setEventos([...eventos, { id: uid("gol"), equipo, jugador, asistencia: propia ? null : (asistencia || null), minuto, extra, propia, etiqueta: etiqueta || null }]);
         setJugador("");
         setAsistencia("");
+        setEtiqueta(null);
     };
     return (React.createElement("div", { className: "card2" },
         React.createElement("div", { className: "section-header px-4 py-2.5" }, "\u26BD Goles y asistencias"),
@@ -2653,6 +2982,7 @@ function EventosPanel({ squad, squadCompleto, eventos, setEventos, localSquad })
             React.createElement("label", { className: "flex items-center gap-1.5 text-xs font-semibold text-zinc-600 cursor-pointer w-fit" },
                 React.createElement("input", { type: "checkbox", checked: propia, onChange: (e) => { setPropia(e.target.checked); setAsistencia(""); } }),
                 "\u26BD\u21A9\uFE0F Gol en propia")),
+        React.createElement("div", { className: "px-3 pt-2 flex flex-wrap gap-1.5" }, ETIQUETAS_GOL.map((et) => React.createElement("button", { key: et, type: "button", onClick: () => setEtiqueta(etiqueta === et ? null : et), className: "text-[10px] font-bold px-2.5 py-1 rounded-full", style: etiqueta === et ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, et))),
         React.createElement("div", { className: "p-3 flex flex-wrap gap-2 items-center row-line" },
             React.createElement("select", { value: jugador, onChange: (e) => setJugador(e.target.value) },
                 React.createElement("option", { value: "" }, propia ? "Jugador que anota en propia\u2026" : "Goleador (en cancha)\u2026"),
@@ -2670,6 +3000,8 @@ function EventosPanel({ squad, squadCompleto, eventos, setEventos, localSquad })
                 a && React.createElement(React.Fragment, null,
                     "\u00B7 \uD83C\uDD70\uFE0F ",
                     a.nombre),
+                " ",
+                e.etiqueta && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-zinc-200 text-zinc-600" }, e.etiqueta),
                 " ",
                 React.createElement("span", { className: "text-zinc-400" }, fmtMinuto(e.minuto, e.extra || 0))),
             React.createElement("button", { onClick: () => setEventos(eventos.filter((x) => x.id !== e.id)) }, "\u2715"))); }))));
@@ -3203,6 +3535,58 @@ function XiIdealTorneo({ fases, todasLasJornadas, teams, players, vecesXi, xiTor
             jugadoresSup.length > 0 && React.createElement("div", { className: "card2" },
                 React.createElement("div", { className: "section-header px-4 py-2.5" }, `Suplentes (stats acumuladas \u2014 ${activo.label})`),
                 React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresSup.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: statsMap, vecesXi: vecesXi }))))))));
+}
+// ---------- Premios de Fin de Temporada ----------
+// Tarjeta de un premio individual (Bota de Oro / Máximo Asistente / Guante de Oro). Al tocarla abre el
+// detalle de stats del jugador (mismo modal que usan las tarjetas de Destacados en General).
+function PremioCard({ icon, titulo, jugador, valor, subLabel, equipoNombre, onClick }) {
+    return React.createElement("div", { className: "wide-card wide-card-clickable", onClick: onClick, role: "button", tabIndex: 0 },
+        React.createElement("div", { className: "wide-card-media" }, jugador && jugador.foto ? React.createElement("img", { src: jugador.foto }) : React.createElement(Icon, { size: 26 }, icon)),
+        React.createElement("div", { className: "wide-card-body" },
+            React.createElement("div", { className: "wide-card-label" }, titulo),
+            React.createElement("div", { className: "wide-card-value" }, jugador ? jugador.nombre : "Sin ganador todav\u00EDa"),
+            jugador && React.createElement("div", { className: "wide-card-sub" }, `${valor} ${subLabel} \u00B7 ${equipoNombre}`)));
+}
+// Vista + modal de cierre de torneo: muestra automáticamente, para el período elegido (Torneo completo,
+// Apertura, Clausura o Liguilla), los tres premios individuales calculados en base a las estadísticas de ese
+// período únicamente (no acumulado histórico del jugador): Bota de Oro (goles), Máximo Asistente (asistencias)
+// y Guante de Oro (más vallas invictas entre los arqueros con minutos jugados).
+function PremiosView({ fases, todasLasJornadas, teams, players }) {
+    const [periodo, setPeriodo] = usePersistedState("premiosPeriodo", "torneo");
+    const [detalle, setDetalle] = useState(null);
+    const nombreEquipoDe = (p) => { var _a; return ((_a = teams.find((t) => t.id === p.equipoId)) === null || _a === void 0 ? void 0 : _a.nombre) || "Sin equipo"; };
+    const PERIODOS = [
+        { id: "torneo", label: "Torneo completo", jornadas: todasLasJornadas },
+        { id: "apertura", label: "Apertura", jornadas: fases.apertura },
+        { id: "clausura", label: "Clausura", jornadas: fases.clausura },
+        { id: "liguilla", label: "Liguilla", jornadas: fases.liguilla },
+    ];
+    const activo = PERIODOS.find((p) => p.id === periodo) || PERIODOS[0];
+    const jornadasPeriodo = activo.jornadas || [];
+    const terminado = faseCompleta(jornadasPeriodo);
+    const statsMap = useMemo(() => statsPorPeriodo(jornadasPeriodo), [jornadasPeriodo]);
+    const vallas = useMemo(() => vallasInvictasPorPeriodo(jornadasPeriodo, players), [jornadasPeriodo, players]);
+    const sinPartidos = jornadasPeriodo.every((j) => !j.partidos || !j.partidos.some((p) => p.jugado));
+    const conStats = (campo) => [...statsMap.entries()].filter(([, s]) => s[campo] > 0).sort((a, b) => b[1][campo] - a[1][campo] || b[1].score - a[1].score);
+    const goleadorEntry = conStats("goles")[0];
+    const asistenteEntry = conStats("asistencias")[0];
+    const guanteEntry = [...vallas.entries()].filter(([id]) => { var _a; return ((_a = players.find((p) => p.id === id)) === null || _a === void 0 ? void 0 : _a.posicion) === "PT"; }).sort((a, b) => b[1] - a[1] || (statsMap.get(b[0]) ? statsMap.get(b[0]).score : 0) - (statsMap.get(a[0]) ? statsMap.get(a[0]).score : 0))[0];
+    const jugadorDe = (id) => players.find((p) => p.id === id);
+    const goleador = goleadorEntry ? jugadorDe(goleadorEntry[0]) : null;
+    const asistente = asistenteEntry ? jugadorDe(asistenteEntry[0]) : null;
+    const guante = guanteEntry ? jugadorDe(guanteEntry[0]) : null;
+    const verDetalle = (jugador) => jugador && setDetalle({ tipo: "jugador", titulo: jugador.nombre, jugador, equipoNombre: nombreEquipoDe(jugador) });
+    return (React.createElement("div", { className: "space-y-3" },
+        detalle && React.createElement(DetalleDashboardSheet, { detalle: detalle, onClose: () => setDetalle(null) }),
+        React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+            React.createElement("h2", { className: "text-lg font-black" }, "\uD83C\uDFC5 Premios de Fin de Temporada"),
+            !sinPartidos && React.createElement("span", { className: "text-[10px] font-bold px-2 py-1 rounded-full", style: terminado ? { background: "#DFF3E1", color: "#1E8E3E" } : { background: "#FEF3C7", color: "#92400E" } }, terminado ? "\u2705 Torneo cerrado" : "\u23F3 En curso (parcial)")),
+        React.createElement("div", { className: "tabs-even" }, PERIODOS.map((p) => React.createElement("button", { key: p.id, type: "button", disabled: p.id === "liguilla" && !fases.liguilla.length, onClick: () => setPeriodo(p.id), className: "text-xs font-bold px-3 py-1.5 rounded-full disabled:opacity-40", style: periodo === p.id ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, p.label))),
+        React.createElement("p", { className: "text-xs text-zinc-500" }, "Se calculan solo con las estad\u00EDsticas de ", activo.label, " (no con el acumulado hist\u00F3rico del jugador). Si el torneo todav\u00EDa est\u00E1 en curso, se muestran los l\u00EDderes parciales hasta el momento."),
+        sinPartidos ? React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay partidos jugados en ", activo.label, ".") : React.createElement("div", { className: "space-y-2" },
+            React.createElement(PremioCard, { icon: "\uD83E\uDD47", titulo: "Bota de Oro (Goles)", jugador: goleador, valor: goleadorEntry ? goleadorEntry[1].goles : 0, subLabel: "goles", equipoNombre: goleador && nombreEquipoDe(goleador), onClick: () => verDetalle(goleador) }),
+            React.createElement(PremioCard, { icon: "\uD83C\uDFAF", titulo: "M\u00E1ximo Asistente", jugador: asistente, valor: asistenteEntry ? asistenteEntry[1].asistencias : 0, subLabel: "asistencias", equipoNombre: asistente && nombreEquipoDe(asistente), onClick: () => verDetalle(asistente) }),
+            React.createElement(PremioCard, { icon: "\uD83E\uDDE4", titulo: "Guante de Oro (Vallas invictas)", jugador: guante, valor: guanteEntry ? guanteEntry[1] : 0, subLabel: "vallas invictas", equipoNombre: guante && nombreEquipoDe(guante), onClick: () => verDetalle(guante) }))));
 }
 // ---------- Rankings ----------
 function TablaRanking({ titulo, icon, rows, allRows, cols, teamName, extra }) {
