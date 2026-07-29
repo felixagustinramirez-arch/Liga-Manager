@@ -2581,107 +2581,6 @@ function Calendario({ teams, jornadas, setJornadas, setTab, players, setPlayers,
         !rankingJornadaAll.length && React.createElement("div", { className: "card2 p-4 text-center text-zinc-500 text-xs" }, "Todav\u00EDa no hay partidos jugados en esta jornada (con al menos 5 minutos por jugador)."),
         rankingJornadaAll.length > 0 && React.createElement(TablaRanking, { titulo: `Jugadores de la jornada ${jn} \u2014 por ${OPCIONES_ORDEN.find(([v]) => v === ordenJornada)[1]}`, icon: "\uD83C\uDFC5", rows: rankingJornada, allRows: rankingJornadaAll, cols: colsJornada, teamName: teamName, extra: extraJornada })));
 }
-// ---------- Exportar partido ----------
-function ExportarPartidoBoton({ partido, localTeam, visTeam, localSquad, visSquad, matchData }) {
-    const [open, setOpen] = useState(false);
-    return React.createElement(React.Fragment, null,
-        React.createElement("button", { type: "button", onClick: () => setOpen(true), className: "w-full text-sm px-4 py-2.5 rounded-lg font-semibold bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center gap-2" },
-            React.createElement(Icon, { size: 15 }, "\uD83D\uDCC4"),
-            " Exportar partido (lista de eventos)"),
-        open && React.createElement(ExportarPartidoView, { partido, localTeam, visTeam, localSquad, visSquad, matchData, onClose: () => setOpen(false) }));
-}
-function EscudoChico({ team }) {
-    return team && team.escudo ? React.createElement("img", { src: team.escudo, className: "w-11 h-11 rounded-lg object-cover" }) : React.createElement("div", { className: "w-11 h-11 rounded-lg flex items-center justify-center text-lg font-black", style: { background: "#2c2c30", color: "#8F9500" } }, ((team === null || team === void 0 ? void 0 : team.nombre) || "?").slice(0, 1));
-}
-function EventoExportCard({ item, find }) {
-    if (item.tipo === "gol") {
-        const j = find(item.data.jugador), a = item.data.asistencia ? find(item.data.asistencia) : null;
-        const esLocal = item.data.equipo === "local";
-        return React.createElement("div", { className: "export-card mt-3 overflow-hidden" },
-            React.createElement("div", { className: "p-4 text-center", style: { background: esLocal ? "#b8272f" : "#141416" } },
-                React.createElement("div", { className: "text-2xl mb-1" }, item.data.propia ? "\u26BD\u21A9\uFE0F" : "\u26BD"),
-                React.createElement("div", { className: "text-white font-black text-lg" }, item.data.propia ? "GOL EN PROPIA" : "\u00A1GOOOOL!"),
-                React.createElement("div", { className: "text-white/80 text-sm" }, fmtMinuto(item.minuto, item.extra))),
-            React.createElement("div", { className: "text-center text-white/90 text-sm font-bold py-1.5", style: { background: "rgba(255,255,255,.06)" } },
-                item.marcadorLocal,
-                " - ",
-                item.marcadorVis),
-            React.createElement("div", { className: "p-3" },
-                React.createElement("div", { className: "text-white font-semibold" }, j === null || j === void 0 ? void 0 : j.nombre),
-                React.createElement("div", { className: "text-zinc-400 text-xs" }, j && `${POSICION_GRUPO(j.posicion)} · #${j.dorsal}`),
-                item.data.propia && React.createElement("div", { className: "text-zinc-400 text-xs mt-1" }, "En su propia puerta"),
-                item.data.etiqueta && React.createElement("div", { className: "text-[10px] font-bold inline-block mt-1.5 px-2 py-0.5 rounded-full", style: { background: "rgba(255,255,255,.1)", color: "#fff" } }, item.data.etiqueta),
-                a && React.createElement("div", { className: "text-zinc-400 text-xs mt-1" }, `Asisti\u00F3: ${a.nombre}`)));
-    }
-    if (item.tipo === "tarjeta") {
-        const j = find(item.data.jugador);
-        return React.createElement("div", { className: "export-card mt-3 overflow-hidden" },
-            React.createElement("div", { className: "flex items-center gap-2 px-4 py-2.5", style: { borderBottom: "1px solid #2c2c30" } },
-                React.createElement("span", null, item.data.tipo === "amarilla" ? "\uD83D\uDFE8" : "\uD83D\uDFE5"),
-                React.createElement("span", { className: "text-white font-bold text-xs tracking-wide" }, item.data.tipo === "amarilla" ? "TARJETA AMARILLA" : "TARJETA ROJA"),
-                React.createElement("span", { className: "text-zinc-400 text-xs ml-auto" }, fmtMinuto(item.minuto, item.extra))),
-            React.createElement("div", { className: "p-3" },
-                React.createElement("div", { className: "text-white font-semibold" }, j === null || j === void 0 ? void 0 : j.nombre),
-                React.createElement("div", { className: "text-zinc-400 text-xs" }, j && `${POSICION_GRUPO(j.posicion)} · #${j.dorsal}`)));
-    }
-    const entra = find(item.data.entra), sale = find(item.data.sale);
-    return React.createElement("div", { className: "export-card mt-3 overflow-hidden" },
-        React.createElement("div", { className: "flex items-center gap-2 px-4 py-2.5", style: { borderBottom: "1px solid #2c2c30" } },
-            React.createElement("span", null, "\uD83D\uDD04"),
-            React.createElement("span", { className: "text-white font-bold text-xs tracking-wide" }, "CAMBIO"),
-            React.createElement("span", { className: "text-zinc-400 text-xs ml-auto" }, fmtMinuto(item.minuto, item.extra))),
-        React.createElement("div", { className: "p-3 space-y-2" },
-            React.createElement("div", null,
-                React.createElement("div", { className: "text-emerald-400 text-[10px] font-bold uppercase" }, "Entra"),
-                React.createElement("div", { className: "text-white font-semibold" }, entra === null || entra === void 0 ? void 0 : entra.nombre)),
-            React.createElement("div", null,
-                React.createElement("div", { className: "text-red-400 text-[10px] font-bold uppercase" }, "Sale"),
-                React.createElement("div", { className: "text-white font-semibold" }, sale === null || sale === void 0 ? void 0 : sale.nombre))));
-}
-function ExportarPartidoView({ partido, localTeam, visTeam, localSquad, visSquad, matchData, onClose }) {
-    const { eventos, tarjetas, subs, mvp } = matchData;
-    const squadCompleto = [...localSquad, ...visSquad];
-    const find = (id) => squadCompleto.find((p) => p.id === id);
-    const items = [];
-    eventos.forEach((e) => items.push({ tipo: "gol", minuto: e.minuto, extra: e.extra || 0, data: e }));
-    tarjetas.forEach((t) => items.push({ tipo: "tarjeta", minuto: t.minuto, extra: t.extra || 0, data: t }));
-    subs.forEach((s) => items.push({ tipo: "cambio", minuto: s.minuto, extra: s.extra || 0, data: s }));
-    items.sort((a, b) => (a.minuto + a.extra / 100) - (b.minuto + b.extra / 100));
-    let gl = 0, gv = 0;
-    const conMarcador = items.map((it) => {
-        if (it.tipo === "gol") {
-            if (it.data.equipo === "local")
-                gl++;
-            else
-                gv++;
-            return { ...it, marcadorLocal: gl, marcadorVis: gv };
-        }
-        return it;
-    });
-    const jugadorMvp = mvp ? find(mvp) : null;
-    const equipoDe = (jugadorId) => { const j = find(jugadorId); return j && j.equipoId === partido.local ? localTeam : visTeam; };
-    return React.createElement("div", { className: "export-overlay" },
-        React.createElement("div", { className: "export-noprint sticky top-0 export-bar flex items-center justify-between px-4 py-3 z-10" },
-            React.createElement("button", { onClick: onClose, className: "text-white text-sm flex items-center gap-1" }, "\u2039 Cerrar"),
-            React.createElement("button", { onClick: () => window.print(), className: "btn-olive text-sm px-4 py-2 rounded-lg font-semibold flex items-center gap-1.5" },
-                React.createElement(Icon, { size: 14 }, "\uD83D\uDDA8\uFE0F"),
-                " Imprimir / Guardar PDF")),
-        React.createElement("div", { className: "max-w-md mx-auto px-3 pb-10" },
-            React.createElement("div", { className: "flex items-center justify-between gap-3 py-4" },
-                React.createElement(EscudoChico, { team: localTeam }),
-                React.createElement("div", { className: "text-white text-2xl font-black" },
-                    partido.golesLocal,
-                    " - ",
-                    partido.golesVisitante),
-                React.createElement(EscudoChico, { team: visTeam })),
-            conMarcador.map((it, i) => React.createElement(EventoExportCard, { key: i, item: it, find: find })),
-            jugadorMvp && React.createElement("div", { className: "export-card p-4 text-center mt-3" },
-                React.createElement("div", { className: "text-3xl mb-1" }, "\uD83C\uDFC5"),
-                React.createElement("div", { className: "text-zinc-400 text-xs uppercase tracking-wide font-bold mb-1" }, "MVP del partido"),
-                React.createElement("div", { className: "text-white font-bold" }, jugadorMvp.nombre),
-                React.createElement("div", { className: "text-zinc-500 text-xs" }, (equipoDe(jugadorMvp.id) === null || equipoDe(jugadorMvp.id) === void 0 ? void 0 : equipoDe(jugadorMvp.id).nombre) || "")),
-            !conMarcador.length && React.createElement("div", { className: "text-center text-zinc-500 py-10 text-sm" }, "Este partido no tiene eventos cargados.")));
-}
 // ---------- Tarjeta de resultado (imagen PNG vía Canvas) ----------
 // Genera y permite descargar una tarjeta con escudos, marcador, goleadores y MVP de un partido jugado.
 function cargarImagenTarjeta(src) {
@@ -2729,8 +2628,19 @@ function truncarTextoTarjeta(ctx, texto, maxWidth) {
         t = t.slice(0, -1);
     return t + "…";
 }
-async function dibujarTarjetaPartido(canvas, { localTeam, visTeam, golesLocal, golesVisitante, goleadoresLocal, goleadoresVis, mvpNombre, mvpEquipoNombre, jornadaLabel, fecha }) {
-    const W = 1080, H = 1350;
+async function dibujarTarjetaPartido(canvas, { localTeam, visTeam, golesLocal, golesVisitante, golesFilaLocal, golesFilaVis, tarjFilaLocal, tarjFilaVis, subFilaLocal, subFilaVis, mvpNombre, mvpEquipoNombre, jornadaLabel, fecha }) {
+    const W = 1080;
+    const filasGoles = Math.max(golesFilaLocal.length, golesFilaVis.length);
+    const filasTarjetas = Math.max(tarjFilaLocal.length, tarjFilaVis.length);
+    const filasSubs = Math.max(subFilaLocal.length, subFilaVis.length);
+    const FILA_H = 46;
+    const seccionAlto = (filas) => filas > 0 ? 66 + filas * FILA_H + 14 : 0;
+    const HEADER_H = 118;
+    const TEAM_BLOCK_H = 250;
+    const SUBTITLE_H = 66;
+    const MVP_H = mvpNombre ? 176 : 0;
+    const FOOTER_H = 64;
+    const H = Math.max(760, HEADER_H + TEAM_BLOCK_H + SUBTITLE_H + seccionAlto(filasGoles) + seccionAlto(filasTarjetas) + seccionAlto(filasSubs) + MVP_H + FOOTER_H);
     canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext("2d");
@@ -2739,87 +2649,134 @@ async function dibujarTarjetaPartido(canvas, { localTeam, visTeam, golesLocal, g
     grad.addColorStop(1, "#0b0c0e");
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#8F9500";
-    ctx.font = "900 34px -apple-system, sans-serif";
-    ctx.fillText("LIGA KONAMI", W / 2, 90);
-    ctx.fillStyle = "rgba(255,255,255,.55)";
-    ctx.font = "600 24px -apple-system, sans-serif";
-    ctx.fillText([jornadaLabel, fecha].filter(Boolean).join(" · ") || "Resultado final", W / 2, 128);
-    ctx.strokeStyle = "rgba(255,255,255,.1)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(80, 160);
-    ctx.lineTo(W - 80, 160);
-    ctx.stroke();
-    const [imgLocal, imgVis] = await Promise.all([cargarImagenTarjeta(localTeam === null || localTeam === void 0 ? void 0 : localTeam.escudo), cargarImagenTarjeta(visTeam === null || visTeam === void 0 ? void 0 : visTeam.escudo)]);
-    const cy = 300, r = 90;
-    dibujarEscudoTarjeta(ctx, imgLocal, localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre, 260, cy, r);
-    dibujarEscudoTarjeta(ctx, imgVis, visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre, W - 260, cy, r);
-    ctx.fillStyle = "#fff";
-    ctx.font = "900 96px -apple-system, sans-serif";
-    ctx.textBaseline = "middle";
-    ctx.fillText(`${golesLocal} - ${golesVisitante}`, W / 2, cy);
-    ctx.font = "700 30px -apple-system, sans-serif";
-    ctx.fillStyle = "#e4e4e7";
+    // ---- Cabecera: liga/jornada a la izquierda, estado a la derecha ----
     ctx.textBaseline = "alphabetic";
-    ctx.fillText(truncarTextoTarjeta(ctx, (localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre) || "Local", 300), 260, cy + r + 46);
-    ctx.fillText(truncarTextoTarjeta(ctx, (visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre) || "Visitante", 300), W - 260, cy + r + 46);
-    let y = 500;
     ctx.textAlign = "left";
     ctx.fillStyle = "#8F9500";
-    ctx.font = "900 26px -apple-system, sans-serif";
-    ctx.fillText("⚽ GOLEADORES", 80, y);
-    y += 20;
-    ctx.strokeStyle = "rgba(255,255,255,.1)";
+    ctx.font = "900 24px -apple-system, sans-serif";
+    ctx.fillText("LIGA KONAMI", 60, 56);
+    const cabeceraIzqW = ctx.measureText("LIGA KONAMI").width;
+    ctx.fillStyle = "rgba(255,255,255,.45)";
+    ctx.font = "600 24px -apple-system, sans-serif";
+    const sub = [jornadaLabel, fecha].filter(Boolean).join(" · ");
+    if (sub)
+        ctx.fillText(" · " + sub, 60 + cabeceraIzqW, 56);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "rgba(255,255,255,.7)";
+    ctx.font = "700 22px -apple-system, sans-serif";
+    ctx.fillText("RESULTADO FINAL", W - 60, 56);
+    ctx.strokeStyle = "rgba(255,255,255,.12)";
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(80, y);
-    ctx.lineTo(W - 80, y);
+    ctx.moveTo(60, HEADER_H - 20);
+    ctx.lineTo(W - 60, HEADER_H - 20);
     ctx.stroke();
-    y += 44;
-    const colLocalX = 80, colVisX = W / 2 + 40, colW = W / 2 - 120;
-    const maxFilas = Math.max(goleadoresLocal.length, goleadoresVis.length);
-    ctx.font = "600 27px -apple-system, sans-serif";
-    for (let i = 0; i < maxFilas; i++) {
-        const yy = y + i * 46;
-        const gl = goleadoresLocal[i], gv = goleadoresVis[i];
-        ctx.fillStyle = "#fff";
-        if (gl)
-            ctx.fillText(truncarTextoTarjeta(ctx, `${gl.nombre}${gl.goles > 1 ? " ×" + gl.goles : ""}${gl.propia ? " (pp)" : ""}`, colW), colLocalX, yy);
-        if (gv)
-            ctx.fillText(truncarTextoTarjeta(ctx, `${gv.nombre}${gv.goles > 1 ? " ×" + gv.goles : ""}${gv.propia ? " (pp)" : ""}`, colW), colVisX, yy);
+    // ---- Escudos + marcador ----
+    const [imgLocal, imgVis] = await Promise.all([cargarImagenTarjeta(localTeam === null || localTeam === void 0 ? void 0 : localTeam.escudo), cargarImagenTarjeta(visTeam === null || visTeam === void 0 ? void 0 : visTeam.escudo)]);
+    const cy = HEADER_H + 110, r = 82;
+    dibujarEscudoTarjeta(ctx, imgLocal, localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre, 250, cy, r);
+    dibujarEscudoTarjeta(ctx, imgVis, visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre, W - 250, cy, r);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#fff";
+    ctx.font = "900 92px -apple-system, sans-serif";
+    ctx.fillText(`${golesLocal}`, W / 2 - 78, cy);
+    ctx.fillText(`${golesVisitante}`, W / 2 + 78, cy);
+    ctx.font = "600 48px -apple-system, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,.35)";
+    ctx.fillText("-", W / 2, cy);
+    ctx.textBaseline = "alphabetic";
+    ctx.font = "700 28px -apple-system, sans-serif";
+    ctx.fillStyle = "#F4F7DE";
+    ctx.fillText(truncarTextoTarjeta(ctx, (localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre) || "Local", 300), 250, cy + r + 44);
+    ctx.fillText(truncarTextoTarjeta(ctx, (visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre) || "Visitante", 300), W - 250, cy + r + 44);
+    // ---- Subtítulo centrado ----
+    let y = HEADER_H + TEAM_BLOCK_H;
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255,255,255,.5)";
+    ctx.font = "600 26px -apple-system, sans-serif";
+    ctx.fillText(jornadaLabel || "Resultado", W / 2, y);
+    if (fecha) {
+        y += 34;
+        ctx.font = "500 22px -apple-system, sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,.35)";
+        ctx.fillText(fecha, W / 2, y);
     }
-    if (!goleadoresLocal.length && !goleadoresVis.length) {
-        ctx.fillStyle = "rgba(255,255,255,.4)";
+    y = HEADER_H + TEAM_BLOCK_H + SUBTITLE_H;
+    const colLocalX = W / 2 - 56, colVisX = W / 2 + 56, colW = W / 2 - 130;
+    const dibujarSeccion = (titulo, filasLocal, filasVis, iconoFn) => {
+        const filas = Math.max(filasLocal.length, filasVis.length);
+        if (!filas)
+            return;
+        ctx.strokeStyle = "rgba(255,255,255,.1)";
+        ctx.beginPath();
+        ctx.moveTo(60, y);
+        ctx.lineTo(W - 60, y);
+        ctx.stroke();
+        y += 40;
         ctx.textAlign = "center";
-        ctx.font = "600 26px -apple-system, sans-serif";
-        ctx.fillText("Sin goles registrados", W / 2, y);
-        ctx.textAlign = "left";
-    }
-    const mvpY = H - 220;
-    ctx.strokeStyle = "rgba(255,255,255,.1)";
-    ctx.beginPath();
-    ctx.moveTo(80, mvpY - 40);
-    ctx.lineTo(W - 80, mvpY - 40);
-    ctx.stroke();
+        ctx.fillStyle = "#8F9500";
+        ctx.font = "900 24px -apple-system, sans-serif";
+        ctx.fillText(titulo, W / 2, y);
+        y += 40;
+        ctx.font = "600 25px -apple-system, sans-serif";
+        for (let i = 0; i < filas; i++) {
+            const fl = filasLocal[i], fv = filasVis[i];
+            ctx.font = "22px -apple-system, sans-serif";
+            ctx.fillText(iconoFn(fl, fv), W / 2, y + 8);
+            ctx.font = "600 25px -apple-system, sans-serif";
+            if (fl) {
+                ctx.textAlign = "right";
+                ctx.fillStyle = "#fff";
+                ctx.fillText(truncarTextoTarjeta(ctx, fl.texto, colW), colLocalX, y);
+                ctx.font = "500 19px -apple-system, sans-serif";
+                ctx.fillStyle = "rgba(255,255,255,.4)";
+                ctx.fillText(fl.minutoStr, colLocalX, y + 24);
+            }
+            if (fv) {
+                ctx.textAlign = "left";
+                ctx.fillStyle = "#fff";
+                ctx.font = "600 25px -apple-system, sans-serif";
+                ctx.fillText(truncarTextoTarjeta(ctx, fv.texto, colW), colVisX, y);
+                ctx.font = "500 19px -apple-system, sans-serif";
+                ctx.fillStyle = "rgba(255,255,255,.4)";
+                ctx.fillText(fv.minutoStr, colVisX, y + 24);
+            }
+            y += FILA_H;
+        }
+        y += 14;
+    };
+    dibujarSeccion("\u26BD GOLES", golesFilaLocal, golesFilaVis, (fl, fv) => ((fl && fl.propia) || (fv && fv.propia)) ? "\u26BD\u21A9\uFE0F" : "\u26BD");
+    dibujarSeccion("\uD83C\uDFF7\uFE0F TARJETAS", tarjFilaLocal, tarjFilaVis, (fl, fv) => { const t = (fl || fv); return (t && t.roja) ? "\uD83D\uDFE5" : "\uD83D\uDFE8"; });
+    dibujarSeccion("\uD83D\uDD04 CAMBIOS", subFilaLocal, subFilaVis, () => "\uD83D\uDD04");
+    // ---- MVP ----
     if (mvpNombre) {
+        y += 10;
+        ctx.strokeStyle = "rgba(255,255,255,.1)";
+        ctx.beginPath();
+        ctx.moveTo(60, y);
+        ctx.lineTo(W - 60, y);
+        ctx.stroke();
+        y += 56;
         ctx.textAlign = "center";
-        ctx.font = "900 40px -apple-system, sans-serif";
+        ctx.font = "900 38px -apple-system, sans-serif";
         ctx.fillStyle = "#F4F7DE";
-        ctx.fillText("🏅 MVP DEL PARTIDO", W / 2, mvpY + 10);
-        ctx.font = "700 34px -apple-system, sans-serif";
+        ctx.fillText("\uD83C\uDFC5 MVP DEL PARTIDO", W / 2, y);
+        y += 46;
+        ctx.font = "700 32px -apple-system, sans-serif";
         ctx.fillStyle = "#fff";
-        ctx.fillText(mvpNombre, W / 2, mvpY + 58);
+        ctx.fillText(mvpNombre, W / 2, y);
         if (mvpEquipoNombre) {
-            ctx.font = "500 24px -apple-system, sans-serif";
+            y += 32;
+            ctx.font = "500 22px -apple-system, sans-serif";
             ctx.fillStyle = "rgba(255,255,255,.5)";
-            ctx.fillText(mvpEquipoNombre, W / 2, mvpY + 92);
+            ctx.fillText(mvpEquipoNombre, W / 2, y);
         }
     }
     ctx.textAlign = "center";
     ctx.font = "500 20px -apple-system, sans-serif";
     ctx.fillStyle = "rgba(255,255,255,.3)";
-    ctx.fillText("Liga KONAMI", W / 2, H - 40);
+    ctx.fillText("Liga KONAMI", W / 2, H - 26);
 }
 function TarjetaResultadoBoton({ partido, localTeam, visTeam, localSquad, visSquad, matchData, jornadaLabel }) {
     const [open, setOpen] = useState(false);
@@ -2831,27 +2788,19 @@ function TarjetaResultadoBoton({ partido, localTeam, visTeam, localSquad, visSqu
         setListo(false);
         const squadCompleto = [...localSquad, ...visSquad];
         const find = (id) => squadCompleto.find((p) => p.id === id);
-        const { eventos, mvp } = matchData;
-        const golesDe = (lado) => {
-            const conteo = {};
-            (eventos || []).filter((e) => e.equipo === lado).forEach((e) => {
-                const j = find(e.jugador);
-                if (!j)
-                    return;
-                if (!conteo[j.id])
-                    conteo[j.id] = { nombre: j.nombre, goles: 0, propia: false };
-                conteo[j.id].goles += 1;
-                if (e.propia)
-                    conteo[j.id].propia = true;
-            });
-            return Object.values(conteo).sort((a, b) => b.goles - a.goles);
-        };
+        const { eventos, tarjetas, subs, mvp } = matchData;
+        const porLado = (lista, lado) => (lista || []).filter((x) => x.equipo === lado).slice().sort((a, b) => (a.minuto + (a.extra || 0) / 100) - (b.minuto + (b.extra || 0) / 100));
+        const golesA = (lado) => porLado(eventos, lado).map((e) => { const j = find(e.jugador); return { texto: `${(j === null || j === void 0 ? void 0 : j.nombre) || "?"}`, minutoStr: fmtMinuto(e.minuto, e.extra || 0), propia: !!e.propia }; });
+        const tarjA = (lado) => tarjetas.filter((t) => { const j = find(t.jugador); if (!j) return false; const esLocal = j.equipoId === partido.local; return lado === "local" ? esLocal : !esLocal; }).slice().sort((a, b) => (a.minuto + (a.extra || 0) / 100) - (b.minuto + (b.extra || 0) / 100)).map((t) => { const j = find(t.jugador); return { texto: `${(j === null || j === void 0 ? void 0 : j.nombre) || "?"}`, minutoStr: fmtMinuto(t.minuto, t.extra || 0), roja: t.tipo === "roja" }; });
+        const subsA = (lado) => porLado(subs, lado).map((s) => { const je = find(s.entra), js = find(s.sale); return { texto: `${(je === null || je === void 0 ? void 0 : je.nombre) || "?"} \u21B9 ${(js === null || js === void 0 ? void 0 : js.nombre) || "?"}`, minutoStr: fmtMinuto(s.minuto, s.extra || 0) }; });
         const jugadorMvp = mvp ? find(mvp) : null;
         const equipoMvp = jugadorMvp ? (jugadorMvp.equipoId === partido.local ? localTeam : visTeam) : null;
         dibujarTarjetaPartido(canvasRef.current, {
             localTeam, visTeam,
             golesLocal: partido.golesLocal, golesVisitante: partido.golesVisitante,
-            goleadoresLocal: golesDe("local"), goleadoresVis: golesDe("visitante"),
+            golesFilaLocal: golesA("local"), golesFilaVis: golesA("vis"),
+            tarjFilaLocal: tarjA("local"), tarjFilaVis: tarjA("vis"),
+            subFilaLocal: subsA("local"), subFilaVis: subsA("vis"),
             mvpNombre: jugadorMvp ? jugadorMvp.nombre : null,
             mvpEquipoNombre: equipoMvp ? equipoMvp.nombre : null,
             jornadaLabel, fecha: partido.fecha || "",
@@ -3182,9 +3131,7 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
                                 "')")),
                         React.createElement(NumberField, { step: "0.1", min: 0, max: 10, className: "w-14", value: scores[pl.id] != null ? scores[pl.id] : suger, onCommit: (n) => setScores({ ...scores, [pl.id]: n }) })));
                 })))),
-            partido.jugado && React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-2" },
-                React.createElement(ExportarPartidoBoton, { partido, localTeam, visTeam, localSquad, visSquad, matchData: { localXI, visXI, eventos, tarjetas, subs, scores, mvp } }),
-                React.createElement(TarjetaResultadoBoton, { partido, localTeam, visTeam, localSquad, visSquad, matchData: { eventos, mvp }, jornadaLabel: (jornada === null || jornada === void 0 ? void 0 : jornada.nombre) || `Jornada ${jn}` })),
+            partido.jugado && React.createElement(TarjetaResultadoBoton, { partido, localTeam, visTeam, localSquad, visSquad, matchData: { eventos, tarjetas, subs, mvp }, jornadaLabel: (jornada === null || jornada === void 0 ? void 0 : jornada.nombre) || `Jornada ${jn}` }),
             React.createElement("button", { onClick: guardarPartido, className: "w-full btn-olive py-3 rounded-xl font-bold flex items-center justify-center gap-2" },
                 React.createElement(Icon, { size: 16 }, "\uD83D\uDCBE"),
                 esEdicion ? " Guardar cambios" : " Guardar partido")))));
