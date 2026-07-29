@@ -632,10 +632,11 @@ function vallasInvictasPorPeriodo(jornadas, players) {
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 const fmtMoney = (n) => "$" + Math.round(n || 0).toLocaleString("es-ES");
 const avg = (arr) => (arr && arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+const uid = (prefix) => (prefix ? prefix + "_" : "") + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
 // ---------- Iconos (emoji, sin dependencias) ----------
 const Icon = ({ children, size = 16, className = "" }) => (React.createElement("span", { className: className, style: { fontSize: size, lineHeight: 1, display: "inline-block" } }, children));
 function nuevoEquipo(nombre) {
-    return { id: uid("eq"), nombre: nombre || "Nuevo Equipo", escudo: "", presupuesto: PRESUPUESTO_BASE, presupuestoBase: PRESUPUESTO_BASE };
+    return { id: uid("eq"), nombre: nombre || "Nuevo Equipo", escudo: "", presupuesto: PRESUPUESTO_BASE, presupuestoBase: PRESUPUESTO_BASE, historialCaja: [] };
 }
 function nuevoJugador(equipoId, dorsal) {
     return {
@@ -851,6 +852,25 @@ function revertirEfectosJugadores(players, matchData) {
     });
     return workPlayers;
 }
+// ---------- Libro diario / historial financiero de los equipos ----------
+// Aplica un movimiento de caja a un equipo (monto positivo = ingreso, negativo = egreso), actualiza su
+// presupuesto y deja registrado el evento en su historialCaja para que quede como libro diario transparente.
+// jornada es opcional (null si el movimiento no está atado a una jornada concreta, ej. un fichaje).
+function registrarMovimientoCaja(team, { concepto, monto, jornada }) {
+    const montoRedondeado = Math.round(monto || 0);
+    if (!montoRedondeado)
+        return team;
+    const saldoResultante = Math.round((team.presupuesto || 0) + montoRedondeado);
+    const movimiento = {
+        id: uid("mov"),
+        tipo: montoRedondeado > 0 ? "INGRESO" : "EGRESO",
+        concepto,
+        monto: Math.abs(montoRedondeado),
+        saldoResultante,
+        jornada: jornada != null ? jornada : null,
+    };
+    return { ...team, presupuesto: saldoResultante, historialCaja: [...(team.historialCaja || []), movimiento] };
+}
 // Bono de una jornada clave: mejor posición en la tabla de la fase = mayor plus, pero siempre modesto
 // (entre 0.5% y 3% del presupuesto base del equipo), para no desequilibrar el mercado.
 function calcularBonoPorPosicion(rank, totalEquipos, presupuestoBase) {
@@ -867,29 +887,41 @@ function bonoJornadaEquipos(teams, jornadasFase, jornadaNumero, signo) {
         if (rank <= 0)
             return t;
         const bono = calcularBonoPorPosicion(rank, total, t.presupuestoBase);
-        return { ...t, presupuesto: Math.round(t.presupuesto + signo * bono) };
+        const concepto = signo > 0
+            ? `Bono de jornada ${jornadaNumero} (posición #${rank} de ${total})`
+            : `Reversión de bono de jornada ${jornadaNumero}`;
+        return registrarMovimientoCaja(t, { concepto, monto: signo * bono, jornada: jornadaNumero });
     });
 }
 // Aplica al presupuesto de los dos equipos el resultado de un partido.
-function aplicarEfectosPresupuesto(teams, equipoLocalId, equipoVisId, golesLocal, golesVis) {
+function aplicarEfectosPresupuesto(teams, equipoLocalId, equipoVisId, golesLocal, golesVis, jornadaNumero) {
     return teams.map((t) => {
         if (t.id !== equipoLocalId && t.id !== equipoVisId)
             return t;
         const esLocal = t.id === equipoLocalId;
         const gf = esLocal ? golesLocal : golesVis, gc = esLocal ? golesVis : golesLocal;
         let delta = 0;
-        if (gf > gc)
+        let resultado = "";
+        if (gf > gc) {
             delta = t.presupuestoBase * 0.05;
-        else if (gf === gc)
+            resultado = "Victoria";
+        }
+        else if (gf === gc) {
             delta = t.presupuestoBase * 0.01;
-        else
+            resultado = "Empate";
+        }
+        else {
             delta = -t.presupuestoBase * 0.02;
+            resultado = "Derrota";
+        }
         delta += gf * t.presupuestoBase * 0.005;
-        return { ...t, presupuesto: Math.round(t.presupuesto + delta) };
+        const rival = teams.find((r) => r.id === (esLocal ? equipoVisId : equipoLocalId));
+        const concepto = `${resultado} ${gf}-${gc}${rival ? ` vs ${rival.nombre}` : ""}${jornadaNumero != null ? ` (J${jornadaNumero})` : ""}`;
+        return registrarMovimientoCaja(t, { concepto, monto: delta, jornada: jornadaNumero != null ? jornadaNumero : null });
     });
 }
 // Inverso de aplicarEfectosPresupuesto.
-function revertirEfectosPresupuesto(teams, equipoLocalId, equipoVisId, golesLocal, golesVis) {
+function revertirEfectosPresupuesto(teams, equipoLocalId, equipoVisId, golesLocal, golesVis, jornadaNumero) {
     return teams.map((t) => {
         if (t.id !== equipoLocalId && t.id !== equipoVisId)
             return t;
@@ -903,7 +935,8 @@ function revertirEfectosPresupuesto(teams, equipoLocalId, equipoVisId, golesLoca
         else
             delta = -t.presupuestoBase * 0.02;
         delta += gf * t.presupuestoBase * 0.005;
-        return { ...t, presupuesto: Math.round(t.presupuesto - delta) };
+        const concepto = `Reversión de resultado ${gf}-${gc}${jornadaNumero != null ? ` (J${jornadaNumero})` : ""}`;
+        return registrarMovimientoCaja(t, { concepto, monto: -delta, jornada: jornadaNumero != null ? jornadaNumero : null });
     });
 }
 // Revierte un partido ya guardado: deshace las estadísticas de los jugadores implicados y el
@@ -915,7 +948,7 @@ function reiniciarPartido(partido, jnNumero, { players, setPlayers, teams, setTe
         return;
     if (partido.matchData)
         setPlayers(revertirEfectosJugadores(players, partido.matchData));
-    let nuevosTeams = revertirEfectosPresupuesto(teams, partido.local, partido.visitante, partido.golesLocal, partido.golesVisitante);
+    let nuevosTeams = revertirEfectosPresupuesto(teams, partido.local, partido.visitante, partido.golesLocal, partido.golesVisitante, jnNumero);
     const jornada = jornadas.find((j) => j.numero === jnNumero);
     const teniaBono = !!(jornada && jornada.bonoAplicado);
     if (teniaBono)
@@ -1372,7 +1405,7 @@ function TorneoApp() {
             setDraftPartido({ ...draftPartidoVacio(), ...dp });
         const d = loadData();
         if (d) {
-            setTeams(d.teams || []);
+            setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
             setPlayers(d.players || []);
             setTransfers(d.transfers || []);
             setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
@@ -1469,7 +1502,7 @@ function TorneoApp() {
                 const d = JSON.parse(ev.target.result);
                 if (!confirm("Esto reemplazará todos los datos actuales por los de la copia. ¿Continuar?"))
                     return;
-                setTeams(d.teams || []);
+                setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
                 setPlayers(d.players || []);
                 if (d.fases) {
                     setFases({
@@ -1501,7 +1534,7 @@ function TorneoApp() {
             limpio.valorMercado = calcValorMercado(limpio);
             return limpio;
         }));
-        setTeams(teams.map((t) => ({ ...t, presupuesto: t.presupuestoBase })));
+        setTeams(teams.map((t) => ({ ...t, presupuesto: t.presupuestoBase, historialCaja: [] })));
         alert("Liga reiniciada. Equipos y jugadores conservados.");
     };
     const borrarTodo = () => {
@@ -1807,6 +1840,7 @@ function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack })
     const [editandoEquipo, setEditandoEquipo] = useState(false);
     const [nombreNuevo, setNombreNuevo] = useState("");
     const [editPlayerId, setEditPlayerId] = useState(null);
+    const [mostrarFinanzas, setMostrarFinanzas] = useState(false);
     if (!team)
         return null;
     const squad = players.filter((p) => p.equipoId === teamId).sort((a, b) => a.dorsal - b.dorsal);
@@ -1872,10 +1906,11 @@ function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack })
                 React.createElement("button", { onClick: () => setEditandoEquipo(!editandoEquipo), className: "p-2 rounded-lg bg-zinc-100 hover:bg-zinc-200" },
                     React.createElement(Icon, { size: 15 }, editandoEquipo ? "✔️" : "✏️"))),
             React.createElement("div", { className: "flex items-center justify-between mt-3 pt-3 border-t border-zinc-100" },
-                React.createElement("div", { className: "flex items-center gap-1.5 text-sm font-semibold text-[#8F9500]" },
+                React.createElement("button", { onClick: () => setMostrarFinanzas(true), className: "flex items-center gap-1.5 text-sm font-semibold text-[#8F9500] hover:opacity-80" },
                     React.createElement(Icon, { size: 15 }, "\uD83D\uDCB0"),
                     " ",
-                    fmtMoney(team.presupuesto)),
+                    fmtMoney(team.presupuesto),
+                    React.createElement("span", { className: "text-[10px] font-bold px-2 py-0.5 rounded-full", style: { background: "#F4F7DE", color: "#8F9500" } }, "Finanzas del Club")),
                 React.createElement("button", { onClick: removeTeam, className: "text-xs text-red-500 flex items-center gap-1 hover:text-red-700" },
                     React.createElement(Icon, { size: 13 }, "\uD83D\uDDD1\uFE0F"),
                     " Eliminar equipo"))),
@@ -1921,7 +1956,8 @@ function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack })
                             p.posicion === "PT" && ` \uD83E\uDDE4${p.golesRecibidos || 0}`))))),
                 !squad.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, "Este equipo no tiene jugadores. A\u00F1ade el primero arriba."))),
         editPlayer && (React.createElement(PlayerSheet, { player: editPlayer, onClose: () => setEditPlayerId(null), onChange: (patch) => setPlayers(players.map((p) => { if (p.id !== editPlayer.id)
-                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); } }))));
+                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); } })),
+        mostrarFinanzas && React.createElement(FinanzasClubSheet, { team: team, onClose: () => setMostrarFinanzas(false) })));
 }
 function PlayerSheet({ player: p, onClose, onChange, onRemove }) {
     const scoreProm = avg(p.scores);
@@ -1981,6 +2017,123 @@ function Field({ label, children }) {
         React.createElement("span", { className: "text-zinc-500 font-medium" }, label),
         children);
 }
+// ---------- Finanzas del Club: desglose y libro diario de movimientos de presupuesto ----------
+// Tarjeta resumida: Presupuesto Inicial + Total Ingresos - Total Egresos = Saldo Actual, más una
+// barra visual con la proporción entre ingresos y egresos y una tabla desplegable con todo el historial.
+function FinanzasPanel({ team }) {
+    const [expandido, setExpandido] = useState(false);
+    const historial = team.historialCaja || [];
+    const totalIngresos = historial.filter((m) => m.tipo === "INGRESO").reduce((a, m) => a + m.monto, 0);
+    const totalEgresos = historial.filter((m) => m.tipo === "EGRESO").reduce((a, m) => a + m.monto, 0);
+    const movimientoTotal = totalIngresos + totalEgresos;
+    const pctIngresos = movimientoTotal > 0 ? Math.round((totalIngresos / movimientoTotal) * 100) : 50;
+    const cronologico = historial.slice().reverse();
+    return React.createElement("div", { className: "space-y-2" },
+        React.createElement("div", { className: "card2 p-4 space-y-3" },
+            React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2" },
+                React.createElement(StatMini, { label: "Presupuesto inicial", value: fmtMoney(team.presupuestoBase) }),
+                React.createElement(StatMini, { label: "Total ingresos", value: "+" + fmtMoney(totalIngresos) }),
+                React.createElement(StatMini, { label: "Total egresos", value: "\u2212" + fmtMoney(totalEgresos) }),
+                React.createElement(StatMini, { label: "Saldo actual", value: fmtMoney(team.presupuesto) })),
+            React.createElement("div", null,
+                React.createElement("div", { className: "flex justify-between text-[10px] text-zinc-400 font-bold uppercase mb-1" },
+                    React.createElement("span", null, "\uD83D\uDFE2 Ingresos"),
+                    React.createElement("span", null, "\uD83D\uDD34 Egresos")),
+                React.createElement("div", { style: { display: "flex", width: "100%", height: 10, borderRadius: 9999, overflow: "hidden", background: "#f4f4f5" } },
+                    React.createElement("div", { style: { width: `${pctIngresos}%`, background: "#8F9500" } }),
+                    React.createElement("div", { style: { width: `${100 - pctIngresos}%`, background: "#dc2626" } })))),
+        React.createElement("button", { type: "button", onClick: () => setExpandido(!expandido), className: "text-xs font-bold text-zinc-600 hover:text-zinc-800 px-1" }, expandido ? "\u25B2 Ocultar historial de movimientos" : `\u25BC Ver historial completo (${historial.length} movimiento${historial.length === 1 ? "" : "s"})`),
+        expandido && React.createElement("div", { className: "card2 overflow-x-auto" },
+            React.createElement("table", { className: "text-sm table-responsive w-full" },
+                React.createElement("thead", { className: "text-zinc-500 text-xs row-line" },
+                    React.createElement("tr", null,
+                        React.createElement("th", { className: "text-left pl-4" }, "Concepto"),
+                        React.createElement("th", null, "Jornada"),
+                        React.createElement("th", null, "Tipo"),
+                        React.createElement("th", null, "Monto"),
+                        React.createElement("th", { className: "pr-4" }, "Saldo"))),
+                React.createElement("tbody", null,
+                    cronologico.map((m) => React.createElement("tr", { key: m.id, className: "row-line" },
+                        React.createElement("td", { className: "py-2 pl-4", "data-label": "Concepto" }, m.concepto),
+                        React.createElement("td", { className: "text-center text-zinc-500", "data-label": "Jornada" }, m.jornada != null ? `J${m.jornada}` : "\u2014"),
+                        React.createElement("td", { className: "text-center", "data-label": "Tipo" }, m.tipo === "INGRESO" ? React.createElement("span", { style: { color: "#16a34a" } }, "\uD83D\uDFE2 Ingreso") : React.createElement("span", { style: { color: "#dc2626" } }, "\uD83D\uDD34 Egreso")),
+                        React.createElement("td", { className: "text-center font-semibold", "data-label": "Monto", style: { color: m.tipo === "INGRESO" ? "#16a34a" : "#dc2626" } }, (m.tipo === "INGRESO" ? "+" : "\u2212") + fmtMoney(m.monto)),
+                        React.createElement("td", { className: "text-center pr-4 font-semibold", "data-label": "Saldo" }, fmtMoney(m.saldoResultante)))),
+                    !cronologico.length && React.createElement("tr", null,
+                        React.createElement("td", { colSpan: 5, className: "text-center text-zinc-500 py-8" }, "Todav\u00EDa no hay movimientos registrados para este equipo.")))))); 
+}
+function FinanzasClubSheet({ team, onClose }) {
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", style: { maxWidth: 620 }, onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex items-center justify-between mb-3" },
+                React.createElement("span", { className: "font-black text-lg flex items-center gap-2" },
+                    React.createElement(Icon, { size: 18 }, "\uD83D\uDCB0"),
+                    "Finanzas del Club \u2014 ", team.nombre),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement(FinanzasPanel, { team: team })));
+}
+// ---------- Comparador de jugadores: cara a cara con las métricas principales ----------
+function ComparadorJugadoresModal({ players, teams, onClose }) {
+    const [idA, setIdA] = useState("");
+    const [idB, setIdB] = useState("");
+    const teamName = (id) => { const t = teams.find((t) => t.id === id); return t ? t.nombre : "\uD83C\uDD93 Agente Libre"; };
+    const pA = players.find((p) => p.id === idA);
+    const pB = players.find((p) => p.id === idB);
+    const opciones = players.slice().sort((a, b) => a.nombre.localeCompare(b.nombre));
+    const filas = [
+        { label: "Equipo", val: (p) => teamName(p.equipoId) },
+        { label: "Posici\u00F3n", val: (p) => p.posicion },
+        { label: "GRL / Media", val: (p) => valoracionEfectiva(p).toFixed(0) },
+        { label: "Valor de mercado", val: (p) => fmtMoney(p.valorMercado) },
+        { label: "\u26BD Goles", val: (p) => p.goles || 0 },
+        { label: "\uD83C\uDD70\uFE0F Asistencias", val: (p) => p.asistencias || 0 },
+        { label: "\uD83D\uDFE8 Amarillas", val: (p) => p.amarillas || 0 },
+        { label: "\uD83D\uDFE5 Rojas", val: (p) => p.rojas || 0 },
+        { label: "\u2B50 Promedio de score", val: (p) => p.scores && p.scores.length ? avg(p.scores).toFixed(1) : "\u2014" },
+        { label: "Partidos jugados", val: (p) => p.partidosJugados || 0 },
+    ];
+    const mejor = (f, va, vb) => {
+        if (!pA || !pB || va === "\u2014" || vb === "\u2014")
+            return null;
+        const na = Number(va), nb = Number(vb);
+        if (Number.isNaN(na) || Number.isNaN(nb) || na === nb)
+            return null;
+        return na > nb ? "A" : "B";
+    };
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", style: { maxWidth: 640 }, onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex items-center justify-between mb-3" },
+                React.createElement("span", { className: "font-black text-lg flex items-center gap-2" },
+                    React.createElement(Icon, { size: 18 }, "\u2696\uFE0F"),
+                    "Comparador de jugadores"),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement("div", { className: "grid grid-cols-2 gap-2 mb-3" },
+                React.createElement("select", { className: "w-full", value: idA, onChange: (e) => setIdA(e.target.value) },
+                    React.createElement("option", { value: "" }, "Jugador A\u2026"),
+                    opciones.map((p) => React.createElement("option", { key: p.id, value: p.id, disabled: p.id === idB }, `${p.nombre} \u2014 ${teamName(p.equipoId)}`))),
+                React.createElement("select", { className: "w-full", value: idB, onChange: (e) => setIdB(e.target.value) },
+                    React.createElement("option", { value: "" }, "Jugador B\u2026"),
+                    opciones.map((p) => React.createElement("option", { key: p.id, value: p.id, disabled: p.id === idA }, `${p.nombre} \u2014 ${teamName(p.equipoId)}`)))),
+            (pA || pB) ? React.createElement("div", { className: "card2 overflow-x-auto" },
+                React.createElement("table", { className: "text-sm table-responsive w-full" },
+                    React.createElement("thead", { className: "text-zinc-500 text-xs row-line" },
+                        React.createElement("tr", null,
+                            React.createElement("th", { className: "text-left pl-3 py-2" }, ""),
+                            React.createElement("th", { className: "text-center py-2" }, pA ? pA.nombre : "\u2014"),
+                            React.createElement("th", { className: "text-center py-2" }, pB ? pB.nombre : "\u2014"))),
+                    React.createElement("tbody", null,
+                        filas.map((f, i) => {
+                            const vA = pA ? f.val(pA) : "\u2014";
+                            const vB = pB ? f.val(pB) : "\u2014";
+                            const ganador = mejor(f, vA, vB);
+                            return React.createElement("tr", { key: i, className: "row-line" },
+                                React.createElement("td", { className: "pl-3 py-2 text-xs text-zinc-500 font-medium" }, f.label),
+                                React.createElement("td", { className: "text-center py-2 font-semibold", style: ganador === "A" ? { color: "#8F9500" } : undefined }, vA),
+                                React.createElement("td", { className: "text-center py-2 font-semibold", style: ganador === "B" ? { color: "#8F9500" } : undefined }, vB));
+                        })))) : React.createElement("div", { className: "text-center text-zinc-500 text-sm py-10" }, "Selecciona dos jugadores de cualquier equipo para compararlos.")));
+}
 // ---------- Jugadores: lista global con filtros de búsqueda ----------
 // Lista a todos los jugadores del torneo (de cualquier equipo, más los agentes libres) y permite acotarla
 // por nombre, posición, rango de GRL, rango de precio de mercado y si es agente libre o de un equipo puntual.
@@ -1993,6 +2146,7 @@ function JugadoresView({ teams, players, setPlayers }) {
     const [precioMax, setPrecioMax] = useState("");
     const [filtroEquipo, setFiltroEquipo] = useState("");
     const [editPlayerId, setEditPlayerId] = useState(null);
+    const [comparando, setComparando] = useState(false);
     const nombreEquipoDe = (p) => { var _a; return ((_a = teams.find((t) => t.id === p.equipoId)) === null || _a === void 0 ? void 0 : _a.nombre) || null; };
     const hayFiltros = busqueda || filtroPos || grlMin !== "" || grlMax !== "" || precioMin !== "" || precioMax !== "" || filtroEquipo;
     const limpiarFiltros = () => { setBusqueda(""); setFiltroPos(""); setGrlMin(""); setGrlMax(""); setPrecioMin(""); setPrecioMax(""); setFiltroEquipo(""); };
@@ -2019,10 +2173,12 @@ function JugadoresView({ teams, players, setPlayers }) {
     return (React.createElement("div", { className: "space-y-3" },
         React.createElement("div", { className: "flex items-center justify-between" },
             React.createElement("h2", { className: "text-lg font-black" }, "\uD83D\uDD0D Jugadores"),
-            React.createElement("span", { className: "chip-total" },
-                filtrados.length,
-                "/",
-                players.length)),
+            React.createElement("div", { className: "flex items-center gap-2" },
+                React.createElement("button", { type: "button", onClick: () => setComparando(true), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: { background: "#8F9500", color: "#fff" } }, "\u2696\uFE0F Comparar jugadores"),
+                React.createElement("span", { className: "chip-total" },
+                    filtrados.length,
+                    "/",
+                    players.length))),
         React.createElement("div", { className: "card2 p-3 space-y-2" },
             React.createElement("input", { className: "w-full", placeholder: "Buscar por nombre\u2026", value: busqueda, onChange: (e) => setBusqueda(e.target.value) }),
             React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs" },
@@ -2073,7 +2229,8 @@ function JugadoresView({ teams, players, setPlayers }) {
                         p.posicion === "PT" && ` \uD83E\uDDE4${p.golesRecibidos || 0}`)))); }),
             !filtrados.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, players.length ? "Ning\u00FAn jugador coincide con estos filtros." : "A\u00FAn no hay jugadores cargados.")),
         editPlayer && (React.createElement(PlayerSheet, { player: editPlayer, onClose: () => setEditPlayerId(null), onChange: (patch) => setPlayers(players.map((p) => { if (p.id !== editPlayer.id)
-                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); } }))));
+                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); } })),
+        comparando && React.createElement(ComparadorJugadoresModal, { players: players, teams: teams, onClose: () => setComparando(false) })));
 }
 // Input numérico "amigable": mientras escribís podés borrar o dejarlo vacío sin que salte a 0/mín/máx.
 // El valor solo se valida y se aplica (clamp incluido) al confirmar (blur o Enter).
@@ -2930,11 +3087,11 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
         if (esEdicion && partido.matchData) {
             // Antes de aplicar los nuevos datos, deshacemos los efectos de la versión anterior del partido.
             basePlayers = revertirEfectosJugadores(players, partido.matchData);
-            baseTeams = revertirEfectosPresupuesto(teams, partido.local, partido.visitante, partido.golesLocal, partido.golesVisitante);
+            baseTeams = revertirEfectosPresupuesto(teams, partido.local, partido.visitante, partido.golesLocal, partido.golesVisitante, jn);
         }
         const nuevoMatchData = { localXI, visXI, localFormacion: localLineup.formacion, localPT: localLineup.pt, localFilas: localLineup.filas, visFormacion: visLineup.formacion, visPT: visLineup.pt, visFilas: visLineup.filas, eventos, tarjetas, subs, scores, mvp, localSquadIds: localSquad.map((p) => p.id), visSquadIds: visSquad.map((p) => p.id), lesiones };
         const nuevosPlayers = aplicarEfectosJugadores(basePlayers, nuevoMatchData);
-        let nuevosTeams = aplicarEfectosPresupuesto(baseTeams, partido.local, partido.visitante, golesLocal, golesVis);
+        let nuevosTeams = aplicarEfectosPresupuesto(baseTeams, partido.local, partido.visitante, golesLocal, golesVis, jn);
         const partidosActualizados = jornada.partidos.map((p) => p.id !== partido.id ? p : { ...p, jugado: true, golesLocal, golesVisitante: golesVis, matchData: nuevoMatchData });
         const jornadaActualizada = { ...jornada, partidos: partidosActualizados };
         // Si esta jornada quedó completa recién ahora (y es una de las jornadas con plus económico
@@ -3367,18 +3524,34 @@ function JugadorMercadoInfo({ jugador: p }) {
                 p.asistencias || 0))));
 }
 function Mercado({ teams, setTeams, players, setPlayers, transfers, setTransfers, abierto, aperturaCompleta, clausuraCompleta, clausuraIniciada, liguillaIniciada }) {
-    if (!abierto) {
-        const estadoApertura = !aperturaCompleta ? "⏳ Apertura en curso" : clausuraIniciada ? "🔒 Ventana de Apertura cerrada (ya arrancó el Clausura)" : "✅ Apertura completo";
-        const estadoClausura = !clausuraCompleta ? "⏳ Clausura en curso" : liguillaIniciada ? "🔒 Ventana de Clausura cerrada (ya arrancó la Liguilla)" : "✅ Clausura completo";
-        return React.createElement("div", { className: "space-y-3" },
-            React.createElement("h2", { className: "text-lg font-black" }, "Mercado de fichajes"),
-            React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm space-y-2" },
+    const [subTab, setSubTab] = usePersistedState("mercadoSubTab", "fichajes");
+    const contenidoFichajes = () => {
+        if (!abierto) {
+            const estadoApertura = !aperturaCompleta ? "⏳ Apertura en curso" : clausuraIniciada ? "🔒 Ventana de Apertura cerrada (ya arrancó el Clausura)" : "✅ Apertura completo";
+            const estadoClausura = !clausuraCompleta ? "⏳ Clausura en curso" : liguillaIniciada ? "🔒 Ventana de Clausura cerrada (ya arrancó la Liguilla)" : "✅ Clausura completo";
+            return React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm space-y-2" },
                 React.createElement("div", { className: "text-3xl" }, "\uD83D\uDD12"),
                 React.createElement("div", { className: "font-bold text-zinc-600" }, "El mercado de fichajes está cerrado."),
                 React.createElement("div", null, "Se abre al terminar por completo el Apertura o el Clausura, y se cierra en cuanto arranca la fase siguiente (Clausura o Liguilla)."),
-                React.createElement("div", { className: "text-xs" }, estadoApertura, " · ", estadoClausura)));
-    }
-    return MercadoInterno({ teams, setTeams, players, setPlayers, transfers, setTransfers });
+                React.createElement("div", { className: "text-xs" }, estadoApertura, " · ", estadoClausura));
+        }
+        return MercadoInterno({ teams, setTeams, players, setPlayers, transfers, setTransfers });
+    };
+    return React.createElement("div", { className: "space-y-3" },
+        React.createElement("h2", { className: "text-lg font-black" }, "Mercado de fichajes"),
+        React.createElement("div", { className: "tabs-even" }, [["fichajes", "\uD83D\uDED2 Fichajes"], ["finanzas", "\uD83D\uDCB0 Finanzas del Club"]].map(([val, label]) => React.createElement("button", { key: val, type: "button", onClick: () => setSubTab(val), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: subTab === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label))),
+        subTab === "fichajes" && contenidoFichajes(),
+        subTab === "finanzas" && React.createElement(FinanzasMercadoView, { teams: teams }));
+}
+// Selector de equipo + panel de finanzas, disponible desde el Mercado sin depender de si está abierto o cerrado.
+function FinanzasMercadoView({ teams }) {
+    const [equipoId, setEquipoId] = usePersistedState("mercadoFinanzasEquipo", "");
+    const team = teams.find((t) => t.id === equipoId);
+    return React.createElement("div", { className: "space-y-3" },
+        React.createElement("select", { className: "w-full md:w-72", value: equipoId, onChange: (e) => setEquipoId(e.target.value) },
+            React.createElement("option", { value: "" }, "Selecciona un equipo\u2026"),
+            teams.map((t) => React.createElement("option", { key: t.id, value: t.id }, t.nombre))),
+        team ? React.createElement(FinanzasPanel, { team: team }) : React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Selecciona un equipo para ver su desglose de presupuesto y su historial de movimientos."));
 }
 function MercadoInterno({ teams, setTeams, players, setPlayers, transfers, setTransfers }) {
     const [equipoA, setEquipoA] = useState("");
@@ -3403,13 +3576,29 @@ function MercadoInterno({ teams, setTeams, players, setPlayers, transfers, setTr
             alert(`${teamB.nombre} no tiene presupuesto suficiente.`);
             return;
         }
+        const pA = players.find((p) => p.id === jugadorA), pB = players.find((p) => p.id === jugadorB);
         setPlayers(players.map((p) => { if (p.id === jugadorA)
             return { ...p, equipoId: equipoB }; if (p.id === jugadorB)
             return { ...p, equipoId: equipoA }; return p; }));
-        setTeams(teams.map((t) => { if (t.id === equipoA)
-            return { ...t, presupuesto: t.presupuesto - dineroAaB + dineroBaA }; if (t.id === equipoB)
-            return { ...t, presupuesto: t.presupuesto - dineroBaA + dineroAaB }; return t; }));
-        const pA = players.find((p) => p.id === jugadorA), pB = players.find((p) => p.id === jugadorB);
+        setTeams(teams.map((t) => {
+            if (t.id === equipoA) {
+                let nt = t;
+                if (dineroAaB > 0)
+                    nt = registrarMovimientoCaja(nt, { concepto: `Fichaje: pago por ${pB ? pB.nombre : "jugador"} (cede a ${pA ? pA.nombre : "jugador"})`, monto: -dineroAaB });
+                if (dineroBaA > 0)
+                    nt = registrarMovimientoCaja(nt, { concepto: `Fichaje: cobro por cesión de ${pA ? pA.nombre : "jugador"}`, monto: dineroBaA });
+                return nt;
+            }
+            if (t.id === equipoB) {
+                let nt = t;
+                if (dineroBaA > 0)
+                    nt = registrarMovimientoCaja(nt, { concepto: `Fichaje: pago por ${pA ? pA.nombre : "jugador"} (cede a ${pB ? pB.nombre : "jugador"})`, monto: -dineroBaA });
+                if (dineroAaB > 0)
+                    nt = registrarMovimientoCaja(nt, { concepto: `Fichaje: cobro por cesión de ${pB ? pB.nombre : "jugador"}`, monto: dineroAaB });
+                return nt;
+            }
+            return t;
+        }));
         setTransfers([{ id: uid("tr"), fecha: new Date().toISOString(), equipoA: teamA.nombre, equipoB: teamB.nombre, jugadorA: pA === null || pA === void 0 ? void 0 : pA.nombre, jugadorB: pB === null || pB === void 0 ? void 0 : pB.nombre, dineroAaB, dineroBaA }, ...transfers]);
         setJugadorA("");
         setJugadorB("");
