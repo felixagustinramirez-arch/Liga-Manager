@@ -1202,14 +1202,16 @@ function armarCruceCuartos(clasificados) {
 }
 // Genera las dos jornadas (ida y vuelta) de una ronda de liguilla a partir de una lista de series {label, equipoA, equipoB}.
 function generarRondaLiguilla(series, nombreRonda, numeroBase) {
-    const ida = series.map((s) => ({ id: uid("pt"), local: s.equipoA, visitante: s.equipoB, jugado: false, golesLocal: 0, golesVisitante: 0, matchData: null, fecha: "", serie: s.label, penalesGanador: null }));
-    const vuelta = series.map((s) => ({ id: uid("pt"), local: s.equipoB, visitante: s.equipoA, jugado: false, golesLocal: 0, golesVisitante: 0, matchData: null, fecha: "", serie: s.label, penalesGanador: null }));
+    const ida = series.map((s) => ({ id: uid("pt"), local: s.equipoA, visitante: s.equipoB, jugado: false, golesLocal: 0, golesVisitante: 0, matchData: null, fecha: "", serie: s.label, penalesGanador: null, tandaPenales: [] }));
+    const vuelta = series.map((s) => ({ id: uid("pt"), local: s.equipoB, visitante: s.equipoA, jugado: false, golesLocal: 0, golesVisitante: 0, matchData: null, fecha: "", serie: s.label, penalesGanador: null, tandaPenales: [] }));
     return [
         { numero: numeroBase, nombre: `${nombreRonda} \u2014 Ida`, partidos: ida, xiIdeal: null },
         { numero: numeroBase + 1, nombre: `${nombreRonda} \u2014 Vuelta`, partidos: vuelta, xiIdeal: null },
     ];
 }
-// Determina el ganador de una serie ida+vuelta por gol global; si hay empate global, usa penalesGanador (cargado a mano en la vuelta).
+// Determina el ganador de una serie ida+vuelta por gol global; si hay empate global, se usa el gol de visitante
+// (goles marcados por cada equipo jugando como visitante en la serie); si persiste el empate, usa penalesGanador
+// (cargado a mano en la vuelta).
 function ganadorSerie(partidoIda, partidoVuelta) {
     if (!partidoIda || !partidoVuelta || !partidoIda.jugado || !partidoVuelta.jugado)
         return null;
@@ -1220,11 +1222,64 @@ function ganadorSerie(partidoIda, partidoVuelta) {
         return equipoA;
     if (golesB > golesA)
         return equipoB;
+    // Empate global: gol de visitante. A jugó de visitante en la vuelta; B jugó de visitante en la ida.
+    const golesVisitanteA = partidoVuelta.golesVisitante;
+    const golesVisitanteB = partidoIda.golesVisitante;
+    if (golesVisitanteA > golesVisitanteB)
+        return equipoA;
+    if (golesVisitanteB > golesVisitanteA)
+        return equipoB;
+    const tanda = resultadoTandaPenales(partidoVuelta.tandaPenales);
+    if (tanda.terminada)
+        return tanda.ganador === "A" ? equipoA : equipoB;
+    // Compatibilidad con series viejas definidas antes de tener la tanda tiro a tiro.
     if (partidoVuelta.penalesGanador === "A")
         return equipoA;
     if (partidoVuelta.penalesGanador === "B")
         return equipoB;
     return null;
+}
+// Indica si una serie sigue empatada incluso después del criterio de gol de visitante, es decir si hace
+// falta definirla por penales.
+function serieRequierePenales(partidoIda, partidoVuelta) {
+    if (!partidoIda || !partidoVuelta || !partidoIda.jugado || !partidoVuelta.jugado)
+        return false;
+    const golesA = partidoIda.golesLocal + partidoVuelta.golesVisitante;
+    const golesB = partidoIda.golesVisitante + partidoVuelta.golesLocal;
+    if (golesA !== golesB)
+        return false;
+    const golesVisitanteA = partidoVuelta.golesVisitante;
+    const golesVisitanteB = partidoIda.golesVisitante;
+    return golesVisitanteA === golesVisitanteB;
+}
+// Evalúa una tanda de penales (lista ordenada de tiros {equipo:"A"|"B", gol:boolean}) siguiendo las reglas
+// reales: 5 tiros por equipo y, si persiste el empate, muerte súbita de a uno hasta que se rompa la igualdad
+// tras la misma cantidad de tiros. Además corta apenas un equipo queda matemáticamente indefinible.
+function resultadoTandaPenales(tiros) {
+    const lista = tiros || [];
+    let tA = 0, tB = 0, gA = 0, gB = 0;
+    for (const t of lista) {
+        if (t.equipo === "A") { tA++; if (t.gol) gA++; }
+        else { tB++; if (t.gol) gB++; }
+        if (tA < 5 || tB < 5) {
+            const remA = Math.max(0, 5 - tA), remB = Math.max(0, 5 - tB);
+            if (gA > gB + remB)
+                return { terminada: true, ganador: "A", golesA: gA, golesB: gB, tirosA: tA, tirosB: tB };
+            if (gB > gA + remA)
+                return { terminada: true, ganador: "B", golesA: gA, golesB: gB, tirosA: tA, tirosB: tB };
+        }
+        else if (tA === tB && gA !== gB) {
+            return { terminada: true, ganador: gA > gB ? "A" : "B", golesA: gA, golesB: gB, tirosA: tA, tirosB: tB };
+        }
+    }
+    return { terminada: false, ganador: null, golesA: gA, golesB: gB, tirosA: tA, tirosB: tB };
+}
+// Indica a quién le toca tirar el próximo penal ("A" o "B"): A siempre abre cada ronda.
+function turnoTandaPenales(tiros) {
+    const lista = tiros || [];
+    const tA = lista.filter((t) => t.equipo === "A").length;
+    const tB = lista.filter((t) => t.equipo === "B").length;
+    return tA === tB ? "A" : "B";
 }
 // A partir de las jornadas de liguilla ya jugadas, arma/avanza automáticamente semifinal y final cuando corresponde.
 function avanzarLiguilla(jornadasLiguilla) {
@@ -1571,7 +1626,7 @@ function TorneoApp() {
                 tab === "dashboard" && React.createElement(Dashboard, { teams: teams, players: players, fases: fases, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, setTab: goTab }),
                 tab === "equipos" && !selectedTeamId && React.createElement(EquiposLista, { teams: teams, setTeams: setTeams, players: players, onOpen: setSelectedTeamId }),
                 tab === "equipos" && selectedTeamId && React.createElement(EquipoDetalle, { teamId: selectedTeamId, teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, onBack: () => setSelectedTeamId(null) }),
-                tab === "tabla" && React.createElement(TablaTabs, { teams: teams, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, tablaAperturaAnterior: tablaAperturaAnterior, tablaClausuraAnterior: tablaClausuraAnterior, tablaGeneralAnterior: tablaGeneralAnterior, fases: fases, setFases: setFases, setTab: goTab, setFaseActiva: setFaseActiva }),
+                tab === "tabla" && React.createElement(TablaTabs, { teams: teams, players: players, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, tablaAperturaAnterior: tablaAperturaAnterior, tablaClausuraAnterior: tablaClausuraAnterior, tablaGeneralAnterior: tablaGeneralAnterior, fases: fases, setFases: setFases, setTab: goTab, setFaseActiva: setFaseActiva }),
                 tab === "calendario" && React.createElement(Calendario, { key: faseActiva, teams: teams, jornadas: jornadasFase, setJornadas: setJornadasFase, setTab: goTab, players: players, setPlayers: setPlayers, setTeams: setTeams }),
                 tab === "partido" && React.createElement(JugarPartido, { key: faseActiva, teams: teams, players: players, setPlayers: setPlayers, jornadas: jornadasFase, setJornadas: setJornadasFase, setTeams: setTeams, draft: draftPartido, setDraft: setDraftPartido, faseActiva: faseActiva, todasLasJornadas: todasLasJornadas }),
                 tab === "xiideal" && React.createElement(XiIdealJornada, { key: faseActiva, jornadas: jornadasFase, setJornadas: setJornadasFase, teams: teams, players: players, vecesXi: vecesXi }),
@@ -2364,7 +2419,7 @@ function TablaGeneral({ tabla, tablaAnterior, titulo, jornadas, teams }) {
                         React.createElement("td", { colSpan: 10, className: "text-center text-zinc-500 py-6" }, "A\u00F1ade equipos para ver la tabla.")))))));
 }
 // Envoltorio de la pestaña "Tabla": Apertura / Clausura / General / Liguilla.
-function TablaTabs({ teams, tablaApertura, tablaClausura, tablaGeneral, tablaAperturaAnterior, tablaClausuraAnterior, tablaGeneralAnterior, fases, setFases, setTab, setFaseActiva }) {
+function TablaTabs({ teams, players, tablaApertura, tablaClausura, tablaGeneral, tablaAperturaAnterior, tablaClausuraAnterior, tablaGeneralAnterior, fases, setFases, setTab, setFaseActiva }) {
     const [sub, setSub] = usePersistedState("tablaSub", "apertura");
     const OPCIONES = [["apertura", "Apertura"], ["clausura", "Clausura"], ["general", "General"], ["liguilla", "\uD83C\uDFC6 Liguilla"]];
     return (React.createElement("div", { className: "space-y-3" },
@@ -2372,14 +2427,60 @@ function TablaTabs({ teams, tablaApertura, tablaClausura, tablaGeneral, tablaApe
         sub === "apertura" && React.createElement(TablaGeneral, { tabla: tablaApertura, tablaAnterior: tablaAperturaAnterior, titulo: "Tabla Apertura", jornadas: fases.apertura, teams: teams }),
         sub === "clausura" && React.createElement(TablaGeneral, { tabla: tablaClausura, tablaAnterior: tablaClausuraAnterior, titulo: "Tabla Clausura", jornadas: fases.clausura, teams: teams }),
         sub === "general" && React.createElement(TablaGeneral, { tabla: tablaGeneral, tablaAnterior: tablaGeneralAnterior, titulo: "Tabla General (Apertura + Clausura)", jornadas: [...fases.apertura, ...fases.clausura], teams: teams }),
-        sub === "liguilla" && React.createElement(LiguillaView, { teams, tablaApertura, tablaClausura, tablaGeneral, fases, setFases, setTab, setFaseActiva })));
+        sub === "liguilla" && React.createElement(LiguillaView, { teams, players, tablaApertura, tablaClausura, tablaGeneral, fases, setFases, setTab, setFaseActiva })));
 }
 function nombreEquipo(teams, id) {
     const t = teams.find((t) => t.id === id);
     return t ? t.nombre : "\u2014";
 }
-// Fila de una serie (ida + vuelta) de la Liguilla, con marcador global y selector de penales si hace falta.
-function FilaSerieLiguilla({ teams, serie, onPenales }) {
+// Panel de la tanda de penales tiro a tiro: elegís el equipo que tira (según el turno), el jugador de su
+// plantilla y si convirtió o falló. Va mostrando la ronda (⚽/✖) de cada equipo y corta sola cuando la
+// serie queda definida, según las reglas reales (5 tiros y muerte súbita si sigue el empate).
+function TandaPenales({ teams, players, equipoA, equipoB, tiros, onChange }) {
+    const [jugadorSel, setJugadorSel] = useState("");
+    const [nombreLibre, setNombreLibre] = useState("");
+    const lista = tiros || [];
+    const nA = nombreEquipo(teams, equipoA), nB = nombreEquipo(teams, equipoB);
+    const resultado = resultadoTandaPenales(lista);
+    const turno = resultado.terminada ? null : turnoTandaPenales(lista);
+    const equipoTurnoId = turno === "A" ? equipoA : equipoB;
+    const plantilla = players.filter((p) => p.equipoId === equipoTurnoId).sort((a, b) => (a.dorsal || 99) - (b.dorsal || 99));
+    const agregarTiro = (gol) => {
+        const jugador = plantilla.find((p) => p.id === jugadorSel);
+        const jugadorNombre = jugador ? jugador.nombre : (nombreLibre.trim() || "Jugador");
+        onChange([...lista, { equipo: turno, jugadorId: jugador ? jugador.id : null, jugadorNombre, gol }]);
+        setJugadorSel("");
+        setNombreLibre("");
+    };
+    const deshacer = () => onChange(lista.slice(0, -1));
+    const filaEquipo = (letra, nombreEq) => {
+        const propios = lista.filter((t) => t.equipo === letra);
+        return React.createElement("div", { className: "flex-1 space-y-1 min-w-0" },
+            React.createElement("div", { className: "text-[11px] font-bold text-center truncate" }, nombreEq),
+            React.createElement("div", { className: "flex flex-wrap justify-center gap-1" },
+                propios.map((t, i) => React.createElement("div", { key: i, title: `${t.jugadorNombre} \u2014 ${t.gol ? "gol" : "fall\u00F3"}`, className: `w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${t.gol ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}` }, t.gol ? "\u26BD" : "\u2716")),
+                !propios.length && React.createElement("span", { className: "text-[10px] text-zinc-300" }, "\u2014")));
+    };
+    return React.createElement("div", { className: "space-y-2 pt-2 mt-1 border-t border-zinc-100" },
+        React.createElement("div", { className: "text-[11px] font-bold text-zinc-500 text-center" }, "\uD83E\uDD45 Tanda de penales"),
+        React.createElement("div", { className: "flex gap-3" }, filaEquipo("A", nA), filaEquipo("B", nB)),
+        React.createElement("div", { className: "text-center text-sm font-black" },
+            resultado.golesA, " - ", resultado.golesB,
+            resultado.terminada ? React.createElement("span", { className: "text-[#8F9500]" }, ` \u2014 gana ${resultado.ganador === "A" ? nA : nB}`) : null),
+        !resultado.terminada && React.createElement("div", { className: "flex flex-col items-center gap-1.5 pt-1" },
+            React.createElement("div", { className: "text-[11px] text-zinc-500" }, `Tira: ${turno === "A" ? nA : nB}`),
+            React.createElement("div", { className: "flex items-center gap-1.5 flex-wrap justify-center" },
+                plantilla.length > 0
+                    ? React.createElement("select", { value: jugadorSel, onChange: (e) => setJugadorSel(e.target.value), className: "text-[11px] border rounded-lg px-1.5 py-1 max-w-[140px]" },
+                        React.createElement("option", { value: "" }, "Jugador\u2026"),
+                        plantilla.map((p) => React.createElement("option", { key: p.id, value: p.id }, `${p.dorsal ? p.dorsal + " \u00B7 " : ""}${p.nombre}`)))
+                    : React.createElement("input", { type: "text", value: nombreLibre, onChange: (e) => setNombreLibre(e.target.value), placeholder: "Nombre del jugador", className: "text-[11px] border rounded-lg px-1.5 py-1 max-w-[140px]" }),
+                React.createElement("button", { type: "button", onClick: () => agregarTiro(true), className: "text-[11px] px-2 py-1 rounded-lg bg-green-100 text-green-700 hover:bg-green-200 font-semibold" }, "\u26BD Gol"),
+                React.createElement("button", { type: "button", onClick: () => agregarTiro(false), className: "text-[11px] px-2 py-1 rounded-lg bg-red-100 text-red-600 hover:bg-red-200 font-semibold" }, "\u2716 Fall\u00F3"))),
+        lista.length > 0 && React.createElement("button", { type: "button", onClick: deshacer, className: "text-[10px] text-zinc-400 underline block mx-auto" }, "\u21A9 Deshacer \u00FAltimo tiro"));
+}
+// Fila de una serie (ida + vuelta) de la Liguilla, con marcador global y la tanda de penales si hace falta.
+function FilaSerieLiguilla({ teams, players, serie, onTandaChange }) {
     const { equipoA, equipoB, pIda, pVuelta, ganador } = serie;
     const nA = nombreEquipo(teams, equipoA), nB = nombreEquipo(teams, equipoB);
     const idaTxt = pIda.jugado ? `${pIda.golesLocal}-${pIda.golesVisitante}` : "\u2014";
@@ -2387,7 +2488,11 @@ function FilaSerieLiguilla({ teams, serie, onPenales }) {
     const golesA = (pIda.jugado ? pIda.golesLocal : 0) + (pVuelta && pVuelta.jugado ? pVuelta.golesVisitante : 0);
     const golesB = (pIda.jugado ? pIda.golesVisitante : 0) + (pVuelta && pVuelta.jugado ? pVuelta.golesLocal : 0);
     const ambosJugados = pIda.jugado && pVuelta && pVuelta.jugado;
-    const empatado = ambosJugados && golesA === golesB && !ganador;
+    const golesVisitanteA = pVuelta && pVuelta.jugado ? pVuelta.golesVisitante : 0;
+    const golesVisitanteB = pIda.jugado ? pIda.golesVisitante : 0;
+    const globalEmpatado = ambosJugados && golesA === golesB;
+    const definidoPorVisitante = globalEmpatado && golesVisitanteA !== golesVisitanteB;
+    const huboPenales = ambosJugados && serieRequierePenales(pIda, pVuelta);
     return React.createElement("div", { className: "card2 p-3 space-y-1.5" },
         React.createElement("div", { className: "text-[10px] font-bold text-zinc-400" }, serie.serie),
         React.createElement("div", { className: "flex items-center justify-between text-sm" },
@@ -2396,10 +2501,10 @@ function FilaSerieLiguilla({ teams, serie, onPenales }) {
             React.createElement("span", { className: ganador === equipoB ? "font-black text-[#8F9500]" : "font-medium" }, nB)),
         ambosJugados && React.createElement("div", { className: "text-center text-xs text-zinc-500" },
             "Global: ", golesA, " - ", golesB, ganador ? ` \u2014 avanza ${nombreEquipo(teams, ganador)}` : ""),
-        empatado && React.createElement("div", { className: "flex items-center justify-center gap-2 pt-1" },
-            React.createElement("span", { className: "text-[11px] text-zinc-500" }, "Empate global \u2014 \u00bfqui\u00E9n gan\u00F3 en penales?"),
-            React.createElement("button", { type: "button", onClick: () => onPenales(pVuelta.id, "A"), className: "text-[11px] px-2 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200" }, nA),
-            React.createElement("button", { type: "button", onClick: () => onPenales(pVuelta.id, "B"), className: "text-[11px] px-2 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200" }, nB)));
+        globalEmpatado && React.createElement("div", { className: "text-center text-[11px] text-zinc-500" },
+            "Gol de visitante: ", golesVisitanteA, " - ", golesVisitanteB,
+            definidoPorVisitante ? ` \u2014 avanza ${nombreEquipo(teams, ganador)} por gol de visitante` : ""),
+        huboPenales && React.createElement(TandaPenales, { teams, players, equipoA, equipoB, tiros: pVuelta.tandaPenales, onChange: (nuevaTanda) => onTandaChange(pVuelta.id, nuevaTanda) }));
 }
 // Tarjeta de un cruce (serie ida+vuelta) dentro del bracket: escudo, nombre y marcador global de cada equipo,
 // remarcando al clasificado; y abajo el detalle Ida / Vuelta.
@@ -2432,7 +2537,7 @@ function BracketLiguilla({ teams, rondas }) {
         React.createElement("div", { className: "bracket-round-title" }, r.nombreRonda),
         React.createElement("div", { className: "bracket-matches" }, r.series.map((s, i) => React.createElement(BracketMatch, { key: i, teams, s, esFinal: r.nombreRonda === "Final" }))))));
 }
-function LiguillaView({ teams, tablaApertura, tablaClausura, tablaGeneral, fases, setFases, setTab, setFaseActiva }) {
+function LiguillaView({ teams, players, tablaApertura, tablaClausura, tablaGeneral, fases, setFases, setTab, setFaseActiva }) {
     const [vista, setVista] = usePersistedState("liguillaVista", "bracket");
     const clasificados = calcularClasificadosLiguilla(tablaApertura, tablaClausura, tablaGeneral);
     const cruces = clasificados.completo ? armarCruceCuartos(clasificados) : [];
@@ -2447,8 +2552,8 @@ function LiguillaView({ teams, tablaApertura, tablaClausura, tablaGeneral, fases
         setFases((f) => ({ ...f, liguilla: jornadasCuartos }));
     };
     const actualizar = () => setFases((f) => ({ ...f, liguilla: avanzarLiguilla(f.liguilla) }));
-    const setPenalGanador = (vueltaPartidoId, ganador) => {
-        setFases((f) => ({ ...f, liguilla: f.liguilla.map((j) => ({ ...j, partidos: j.partidos.map((p) => p.id === vueltaPartidoId ? { ...p, penalesGanador: ganador } : p) })) }));
+    const setTandaPenales = (vueltaPartidoId, nuevaTanda) => {
+        setFases((f) => ({ ...f, liguilla: f.liguilla.map((j) => ({ ...j, partidos: j.partidos.map((p) => p.id === vueltaPartidoId ? { ...p, tandaPenales: nuevaTanda } : p) })) }));
     };
     const agruparRonda = (numIda, numVuelta, nombreRonda) => {
         const ida = fases.liguilla.find((j) => j.numero === numIda);
@@ -2488,7 +2593,7 @@ function LiguillaView({ teams, tablaApertura, tablaClausura, tablaGeneral, fases
             vista === "bracket" && React.createElement(BracketLiguilla, { teams, rondas }),
             vista === "lista" && rondas.map((r) => React.createElement("div", { key: r.nombreRonda, className: "space-y-2" },
                 React.createElement("h4", { className: "text-sm font-black" }, r.nombreRonda),
-                React.createElement("div", { className: "grid md:grid-cols-2 gap-2" }, r.series.map((s, i) => React.createElement(FilaSerieLiguilla, { key: i, teams, serie: s, onPenales: setPenalGanador })))))));
+                React.createElement("div", { className: "grid md:grid-cols-2 gap-2" }, r.series.map((s, i) => React.createElement(FilaSerieLiguilla, { key: i, teams, players, serie: s, onTandaChange: setTandaPenales })))))));
 }
 // ---------- Calendario ----------
 // Escudo chico reutilizado en las filas de calendario (placeholder con inicial si no hay imagen).
