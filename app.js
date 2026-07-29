@@ -1,0 +1,3923 @@
+"use strict";
+const { useState, useEffect, useMemo, useRef } = React;
+// ---------- Constantes ----------
+const POSICIONES = ["PT", "DEC", "LI", "LD", "MCD", "MC", "MP", "ID", "II", "EI", "ED", "SP", "DC"];
+const MAX_EQUIPOS = 18;
+const MAX_JUGADORES = 32;
+const JORNADAS_TOTAL = 34;
+const PARTIDOS_POR_JORNADA = 9;
+// Jornadas de Apertura y Clausura en las que, al completarse, se reparte un plus económico
+// entre los equipos según su posición en la tabla de esa fase en ese momento.
+const JORNADAS_BONO = new Set([3, 7, 10, 14, 17, 21, 24, 27, 30, 34]);
+const PRESUPUESTO_BASE = 5000000;
+const DORSALES_COMODIN = [31, 32];
+const GRL_COMODIN = 85;
+const isComodin = (p) => p && DORSALES_COMODIN.includes(p.dorsal);
+const STORAGE_KEY = "torneo-pes2017-html-v1";
+// Valoración efectiva de un jugador (los comodines usan el GRL fijo de comodín).
+const valoracionEfectiva = (p) => isComodin(p) ? GRL_COMODIN : clamp((p === null || p === void 0 ? void 0 : p.valoracion) || 82, 60, 99);
+const avgValoracion = (lista) => lista && lista.length ? lista.reduce((a, p) => a + valoracionEfectiva(p), 0) / lista.length : 0;
+// Agrupa las posiciones detalladas en las 4 grandes categorías, para mostrar en exportables.
+const POSICION_GRUPO = (pos) => {
+    if (pos === "PT")
+        return "Portero";
+    if (["DEC", "LI", "LD"].includes(pos))
+        return "Defensor";
+    if (["MCD", "MC", "MP", "ID", "II"].includes(pos))
+        return "Mediocampista";
+    return "Delantero";
+};
+// Catálogo de formaciones disponibles para el XI Ideal de la jornada.
+// Cada formación se define como "lineas": filas de rol ordenadas de ataque (arriba) a defensa (abajo),
+// tal como se ven dibujadas en el campo. El portero (PT) se agrega siempre aparte, debajo de todo.
+// Roles válidos: CF, LW, RW, AM, DM, CB, LB, RB.
+const FORMACIONES_XI = {
+    "6-3-1": { lineas: [["CF"], ["AM"], ["DM", "AM"], ["LB", "CB", "CB", "CB", "CB", "RB"]] },
+    "4-4-2 DEF": { lineas: [["CF", "CF"], ["LW", "AM", "RW"], ["DM"], ["LB", "CB", "CB", "RB"]] },
+    "3-2-4-1": { lineas: [["CF"], ["LW", "AM", "AM", "RW"], ["DM", "DM"], ["CB", "CB", "CB"]] },
+    "3-3-1-3": { lineas: [["LW", "CF", "RW"], ["AM"], ["AM", "DM", "AM"], ["CB", "CB", "CB"]] },
+    "4-2-3-1": { lineas: [["CF"], ["LW", "AM", "RW"], ["DM", "DM"], ["LB", "CB", "CB", "RB"]] },
+    "3-2-3-2": { lineas: [["CF", "CF"], ["LW", "AM", "RW"], ["DM", "DM"], ["CB", "CB", "CB"]] },
+    "3-4-3": { lineas: [["LW", "CF", "RW"], ["AM", "DM", "AM", "AM"], ["CB", "CB", "CB"]] },
+    "3-5-2": { lineas: [["CF", "CF"], ["LW", "AM", "AM", "RW"], ["DM"], ["CB", "CB", "CB"]] },
+    "4-2-4": { lineas: [["LW", "CF", "CF", "RW"], ["DM", "DM"], ["LB", "CB", "CB", "RB"]] },
+    "4-3-3": { lineas: [["LW", "CF", "RW"], ["AM", "DM", "AM"], ["LB", "CB", "CB", "RB"]] },
+    "5-2-3": { lineas: [["LW", "CF", "RW"], ["DM", "DM"], ["LB", "CB", "CB", "CB", "RB"]] },
+    "4-5-1": { lineas: [["CF"], ["LW", "AM", "AM", "RW"], ["DM"], ["LB", "CB", "CB", "RB"]] },
+    "4-4-2": { lineas: [["CF", "CF"], ["LW", "DM", "DM", "RW"], ["LB", "CB", "CB", "RB"]] },
+    "3-3-4": { lineas: [["LW", "CF", "CF", "RW"], ["DM", "AM", "DM"], ["CB", "CB", "CB"]] },
+    "5-4-1": { lineas: [["CF"], ["LW", "AM", "RW"], ["DM"], ["LB", "CB", "CB", "CB", "RB"]] },
+    "5-3-2": { lineas: [["CF", "CF"], ["AM", "DM", "AM"], ["LB", "CB", "CB", "CB", "RB"]] },
+};
+// Distribuye una lista plana de ids de jugadores dentro de los espacios de una formación (arquero aparte).
+function distribuirEnFormacion(ids, squadMap, nombreFormacion) {
+    const lineasRoles = (FORMACIONES_XI[nombreFormacion] || FORMACIONES_XI["4-3-3"]).lineas;
+    const restantes = [...ids];
+    let pt = null;
+    const ptIdx = restantes.findIndex((id) => { const p = squadMap.get(id); return p && p.posicion === "PT"; });
+    if (ptIdx >= 0)
+        pt = restantes.splice(ptIdx, 1)[0];
+    const filas = lineasRoles.map((roles) => roles.map(() => null));
+    let cursor = 0;
+    for (let li = 0; li < filas.length; li++) {
+        for (let si = 0; si < filas[li].length; si++) {
+            if (cursor < restantes.length) {
+                filas[li][si] = restantes[cursor];
+                cursor++;
+            }
+        }
+    }
+    return { PT: pt, filas };
+}
+// Genera una grilla de filas vacías (null) según la formación, para inicializar una alineación editable.
+function filasVaciasFormacion(nombreFormacion) {
+    return (FORMACIONES_XI[nombreFormacion] || FORMACIONES_XI["4-3-3"]).lineas.map((roles) => roles.map(() => null));
+}
+// Alineación en blanco (formación por defecto 4-3-3), usada como base del borrador de partido.
+function lineupVacio() {
+    return { formacion: "4-3-3", pt: null, filas: filasVaciasFormacion("4-3-3") };
+}
+// Borrador en blanco de "Jugar partido": guarda TODO lo que se va cargando (alineaciones, goles, tarjetas,
+// cambios, scores, MVP) antes de confirmar, para que no se pierda nada al cambiar de sección/pestaña o de página.
+function draftPartidoVacio() {
+    return { jn: 1, partidoId: "", localLineup: lineupVacio(), visLineup: lineupVacio(), eventos: [], tarjetas: [], subs: [], scores: {}, mvp: "", lesiones: [] };
+}
+// Agrupa un rol de formación en la macro-categoría usada para filtrar jugadores elegibles.
+const ROLE_GRUPO = (role) => {
+    if (["CB", "LB", "RB"].includes(role))
+        return "Defensor";
+    if (["DM", "AM"].includes(role))
+        return "Mediocampista";
+    return "Delantero";
+};
+// Jugadores que jugaron al menos 5 minutos en los partidos ya disputados de una jornada, con sus stats de esa jornada.
+function jugadoresElegiblesJornada(jornada) {
+    const elegibles = new Map();
+    (jornada && jornada.partidos ? jornada.partidos : []).forEach((partido) => {
+        if (!partido.jugado || !partido.matchData)
+            return;
+        const { localXI, visXI, eventos, tarjetas, subs, scores } = partido.matchData;
+        const minutosDe = (jugadorId, enXI) => {
+            if (!enXI) {
+                const s = subs.find((s) => s.entra === jugadorId);
+                return s ? 90 - s.minuto : 0;
+            }
+            const s = subs.find((s) => s.sale === jugadorId);
+            return s ? s.minuto : 90;
+        };
+        const ids = new Set([...localXI, ...visXI]);
+        subs.forEach((s) => ids.add(s.entra));
+        ids.forEach((id) => {
+            const enXI = localXI.includes(id) || visXI.includes(id);
+            const min = minutosDe(id, enXI);
+            if (min < 5)
+                return;
+            const golesP = eventos.filter((e) => e.jugador === id && !e.propia).length;
+            const asistP = eventos.filter((e) => e.asistencia === id).length;
+            const amarillaP = tarjetas.filter((t) => t.jugador === id && t.tipo === "amarilla").length;
+            const rojaP = tarjetas.filter((t) => t.jugador === id && t.tipo === "roja").length;
+            const score = scores[id] != null ? scores[id] : sugerirScore(golesP, asistP, amarillaP, rojaP, min);
+            elegibles.set(id, { min, goles: golesP, asistencias: asistP, amarillas: amarillaP, rojas: rojaP, score });
+        });
+    });
+    return elegibles;
+}
+// Acumula, para un conjunto de jornadas (Apertura, Clausura, Liguilla o el torneo completo), las stats
+// de cada jugador jornada a jornada (reutilizando jugadoresElegiblesJornada) y calcula su score promedio.
+function statsPorPeriodo(jornadas) {
+    const acumulado = new Map();
+    (jornadas || []).forEach((jornada) => {
+        const elegibles = jugadoresElegiblesJornada(jornada);
+        elegibles.forEach((st, id) => {
+            const prev = acumulado.get(id) || { min: 0, goles: 0, asistencias: 0, amarillas: 0, rojas: 0, scores: [], partidos: 0 };
+            acumulado.set(id, {
+                min: prev.min + st.min,
+                goles: prev.goles + st.goles,
+                asistencias: prev.asistencias + st.asistencias,
+                amarillas: prev.amarillas + st.amarillas,
+                rojas: prev.rojas + st.rojas,
+                scores: [...prev.scores, st.score],
+                partidos: prev.partidos + 1,
+            });
+        });
+    });
+    const resultado = new Map();
+    acumulado.forEach((v, id) => resultado.set(id, { ...v, score: avg(v.scores) }));
+    return resultado;
+}
+// Arma automáticamente el mejor XI de un período: por cada espacio de la formación elegida se toma,
+// dentro del grupo de posición correspondiente (Defensor/Mediocampista/Delantero/Portero), al jugador
+// disponible con mejor score promedio (empates: goles+asistencias, luego minutos jugados).
+function armarXiAutomatico(players, statsMap, nombreFormacion) {
+    const lineasRoles = (FORMACIONES_XI[nombreFormacion] || FORMACIONES_XI["4-3-3"]).lineas;
+    const elegibles = players.filter((p) => statsMap.has(p.id));
+    const ordenados = (grupo) => elegibles.filter((p) => POSICION_GRUPO(p.posicion) === grupo).sort((a, b) => {
+        const sa = statsMap.get(a.id), sb = statsMap.get(b.id);
+        return sb.score - sa.score || (sb.goles + sb.asistencias) - (sa.goles + sa.asistencias) || sb.min - sa.min;
+    });
+    const pools = { Portero: ordenados("Portero"), Defensor: ordenados("Defensor"), Mediocampista: ordenados("Mediocampista"), Delantero: ordenados("Delantero") };
+    const usados = new Set();
+    const tomarDe = (grupo) => { const p = (pools[grupo] || []).find((pl) => !usados.has(pl.id)); if (p) usados.add(p.id); return p ? p.id : null; };
+    // Si no queda nadie disponible en el grupo ideal, se completa con el mejor jugador de campo libre (nunca un arquero).
+    const tomarConFallback = (grupo) => {
+        const id = tomarDe(grupo);
+        if (id)
+            return id;
+        const candidato = elegibles.filter((p) => !usados.has(p.id) && p.posicion !== "PT").sort((a, b) => statsMap.get(b.id).score - statsMap.get(a.id).score)[0];
+        if (candidato) { usados.add(candidato.id); return candidato.id; }
+        return null;
+    };
+    const PT = tomarDe("Portero");
+    const filas = lineasRoles.map((roles) => roles.map((role) => tomarConFallback(ROLE_GRUPO(role))));
+    const resto = elegibles.filter((p) => !usados.has(p.id)).sort((a, b) => statsMap.get(b.id).score - statsMap.get(a.id).score);
+    const suplentes = resto.slice(0, 5).map((p) => p.id);
+    suplentes.forEach((id) => usados.add(id));
+    while (suplentes.length < 5)
+        suplentes.push(null);
+    return { formacion: nombreFormacion, PT, filas, suplentes };
+}
+// Cuenta, para cada arquero, en cuántos partidos de un período (Apertura, Clausura, Liguilla o Torneo completo)
+// dejó su valla invicta (no recibió goles mientras estuvo en cancha, según su intervalo real de minutos jugados).
+// Reutiliza intervaloEnCancha / golesRecibidosEnIntervalo, la misma lógica que ya usa golesRecibidos acumulado.
+function vallasInvictasPorPeriodo(jornadas, players) {
+    const posicionPorId = new Map(players.map((p) => [p.id, p.posicion]));
+    const conteo = new Map();
+    (jornadas || []).forEach((jornada) => {
+        (jornada.partidos || []).forEach((partido) => {
+            if (!partido.jugado || !partido.matchData)
+                return;
+            const { localXI, visXI, eventos, subs } = partido.matchData;
+            const ids = new Set([...localXI, ...visXI]);
+            subs.forEach((s) => ids.add(s.entra));
+            ids.forEach((id) => {
+                if (posicionPorId.get(id) !== "PT")
+                    return;
+                const intervalo = intervaloEnCancha(id, localXI, visXI, subs);
+                if (!intervalo || intervalo.fin - intervalo.inicio <= 0)
+                    return;
+                const recibidos = golesRecibidosEnIntervalo(intervalo.equipo, intervalo.inicio, intervalo.fin, eventos);
+                if (recibidos === 0)
+                    conteo.set(id, (conteo.get(id) || 0) + 1);
+            });
+        });
+    });
+    return conteo;
+}
+const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+const fmtMoney = (n) => "$" + Math.round(n || 0).toLocaleString("es-ES");
+const avg = (arr) => (arr && arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+const uid = (prefix) => (prefix ? prefix + "_" : "") + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+const LOGO_LIGA = "data:image/png;base64,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";
+// ---------- Iconos (emoji, sin dependencias) ----------
+const Icon = ({ children, size = 16, className = "" }) => (React.createElement("span", { className: className, style: { fontSize: size, lineHeight: 1, display: "inline-block" } }, children));
+function nuevoEquipo(nombre) {
+    return { id: uid("eq"), nombre: nombre || "Nuevo Equipo", escudo: "", presupuesto: PRESUPUESTO_BASE, presupuestoBase: PRESUPUESTO_BASE, historialCaja: [] };
+}
+function nuevoJugador(equipoId, dorsal) {
+    return {
+        id: uid("jg"), nombre: "Nuevo Jugador", nombreDorsal: "", dorsal: dorsal || 1, valoracion: 82, posicion: "MC",
+        foto: "", equipoId: equipoId || null,
+        goles: 0, asistencias: 0, partidosJugados: 0, minutosJugados: 0,
+        scores: [], amarillas: 0, rojas: 0, sancionJornadas: 0, mvps: 0,
+        valorMercado: 0, golesRecibidos: 0, jornadasLesionado: 0,
+    };
+}
+function generarJornadas() {
+    const j = [];
+    for (let n = 1; n <= JORNADAS_TOTAL; n++) {
+        const partidos = [];
+        for (let p = 0; p < PARTIDOS_POR_JORNADA; p++) {
+            partidos.push({ id: uid("pt"), local: null, visitante: null, jugado: false, golesLocal: 0, golesVisitante: 0, matchData: null, fecha: "" });
+        }
+        j.push({ numero: n, partidos, xiIdeal: null, bonoAplicado: false });
+    }
+    return j;
+}
+// Valor de mercado equilibrado para jugadores 80-89 (curva exponencial suave)
+function calcValorMercado(jugador) {
+    const comodin = isComodin(jugador);
+    const grl = comodin ? GRL_COMODIN : clamp(jugador.valoracion || 82, 60, 99);
+    const base = Math.pow(1.32, grl - 79) * 200000;
+    const sp = avg(jugador.scores) || 6.0;
+    const factor = clamp(1 + (sp - 6) * 0.12 + (jugador.goles || 0) * 0.02 + (jugador.asistencias || 0) * 0.015 - (jugador.rojas || 0) * 0.05 - (jugador.amarillas || 0) * 0.01, 0.5, 2.2);
+    let valor = base * factor;
+    if (comodin)
+        valor *= Math.pow(1.32, 2); // un comodín (85 fijo) vale casi como un jugador normal de 87
+    return Math.round(valor / 1000) * 1000;
+}
+function sugerirScore(golesP, asistP, amarillaP, rojaP, minutos) {
+    let s = 6.0 + golesP * 0.6 + asistP * 0.4 - amarillaP * 0.4 - rojaP * 1.8;
+    if (minutos <= 0)
+        s = 0;
+    return Math.round(clamp(s, 0, 10) * 10) / 10;
+}
+// Un jugador queda expulsado del partido si recibe una roja directa o su segunda amarilla.
+function jugadorExpulsadoEnPartido(tarjetas, jugadorId) {
+    const amarillas = tarjetas.filter((t) => t.jugador === jugadorId && t.tipo === "amarilla").length;
+    const rojas = tarjetas.filter((t) => t.jugador === jugadorId && t.tipo === "roja").length;
+    return amarillas >= 2 || rojas >= 1;
+}
+// Devuelve el set de ids de jugadores de un equipo que siguen en el campo:
+// titulares menos los sustituidos y expulsados, más los que entraron de cambio.
+function calcularEnCancha(xi, subs, equipoTag, tarjetas) {
+    const activos = new Set(xi);
+    subs.filter((s) => s.equipo === equipoTag).forEach((s) => {
+        activos.delete(s.sale);
+        activos.add(s.entra);
+    });
+    activos.forEach((id) => { if (jugadorExpulsadoEnPartido(tarjetas, id))
+        activos.delete(id); });
+    return activos;
+}
+// Formatea un minuto con tiempo de compensación, ej: fmtMinuto(45, 2) -> "45+2'"
+function fmtMinuto(minuto, extra) {
+    return extra > 0 ? `${minuto}+${extra}'` : `${minuto}'`;
+}
+// Devuelve el equipo ("local"/"vis") y el intervalo de minutos [inicio, fin] que un jugador estuvo en cancha.
+function intervaloEnCancha(jugadorId, localXI, visXI, subs) {
+    const enLocalXI = localXI.includes(jugadorId);
+    const enVisXI = visXI.includes(jugadorId);
+    if (enLocalXI || enVisXI) {
+        const equipo = enLocalXI ? "local" : "vis";
+        const s = subs.find((s) => s.sale === jugadorId);
+        return { equipo, inicio: 0, fin: s ? s.minuto : 90 };
+    }
+    const s = subs.find((s) => s.entra === jugadorId);
+    if (!s)
+        return null;
+    return { equipo: s.equipo, inicio: s.minuto, fin: 90 };
+}
+// Goles recibidos por el equipo rival mientras un portero estuvo en cancha, en base a su intervalo.
+function golesRecibidosEnIntervalo(equipo, inicio, fin, eventos) {
+    const rival = equipo === "local" ? "vis" : "local";
+    return eventos.filter((e) => e.equipo === rival && e.minuto >= inicio && e.minuto <= fin).length;
+}
+// Aplica a un array de jugadores los efectos de los datos de un partido: goles, asistencias,
+// tarjetas, minutos, sanciones, score y MVP. Devuelve un nuevo array (no muta el original).
+function aplicarEfectosJugadores(players, matchData) {
+    const { localXI, visXI, eventos, tarjetas, subs, scores, mvp, localSquadIds, visSquadIds, lesiones } = matchData;
+    const workPlayers = players.map((p) => ({ ...p, scores: [...p.scores] }));
+    const byId = Object.fromEntries(workPlayers.map((p) => [p.id, p]));
+    const minutosDe = (jugadorId, enXI) => {
+        if (!enXI) {
+            const s = subs.find((s) => s.entra === jugadorId);
+            return s ? 90 - s.minuto : 0;
+        }
+        const s = subs.find((s) => s.sale === jugadorId);
+        return s ? s.minuto : 90;
+    };
+    const ids = new Set([...localXI, ...visXI]);
+    subs.forEach((s) => ids.add(s.entra));
+    ids.forEach((id) => {
+        const g = byId[id];
+        if (!g)
+            return;
+        const enXI = localXI.includes(id) || visXI.includes(id);
+        const min = minutosDe(id, enXI);
+        const golesP = eventos.filter((e) => e.jugador === id && !e.propia).length;
+        const asistP = eventos.filter((e) => e.asistencia === id).length;
+        const amarillaP = tarjetas.filter((t) => t.jugador === id && t.tipo === "amarilla").length;
+        const rojaP = tarjetas.filter((t) => t.jugador === id && t.tipo === "roja").length;
+        if (min > 0) {
+            g.partidosJugados += 1;
+            g.minutosJugados += min;
+        }
+        g.goles += golesP;
+        g.asistencias += asistP;
+        g.amarillas += amarillaP;
+        g.rojas += rojaP;
+        const expulsadoEnPartido = rojaP > 0 || amarillaP >= 2;
+        if (expulsadoEnPartido)
+            g.sancionJornadas = (g.sancionJornadas || 0) + 1;
+        if (g.amarillas > 0 && g.amarillas % 3 === 0 && amarillaP > 0)
+            g.sancionJornadas = (g.sancionJornadas || 0) + 1;
+        const scoreVal = scores[id] != null ? scores[id] : sugerirScore(golesP, asistP, amarillaP, rojaP, min);
+        if (min >= 5)
+            g.scores.push(scoreVal);
+        if (g.posicion === "PT" && min > 0) {
+            const intervalo = intervaloEnCancha(id, localXI, visXI, subs);
+            if (intervalo)
+                g.golesRecibidos = (g.golesRecibidos || 0) + golesRecibidosEnIntervalo(intervalo.equipo, intervalo.inicio, intervalo.fin, eventos);
+        }
+        g.valorMercado = calcValorMercado(g);
+    });
+    if (mvp && byId[mvp])
+        byId[mvp].mvps = (byId[mvp].mvps || 0) + 1;
+    // Lesiones registradas en este partido: se asigna al jugador la cantidad de jornadas de baja indicada.
+    (lesiones || []).forEach((l) => {
+        const g = byId[l.jugador];
+        if (g)
+            g.jornadasLesionado = (g.jornadasLesionado || 0) + (l.gravedad || 0);
+    });
+    // Un jugador sancionado que no fue convocado en este partido de su equipo cumple una jornada de sanción.
+    // Un jugador lesionado que no fue convocado en este partido de su equipo cumple una jornada de baja (alta médica progresiva).
+    [...(localSquadIds || []), ...(visSquadIds || [])].forEach((id) => {
+        const g = byId[id];
+        if (g && !ids.has(id) && (g.sancionJornadas || 0) > 0)
+            g.sancionJornadas -= 1;
+        if (g && !ids.has(id) && (g.jornadasLesionado || 0) > 0)
+            g.jornadasLesionado -= 1;
+    });
+    return workPlayers;
+}
+// Inverso de aplicarEfectosJugadores: deshace los efectos de un partido ya aplicado.
+function revertirEfectosJugadores(players, matchData) {
+    const { localXI, visXI, eventos, tarjetas, subs, scores, mvp, localSquadIds, visSquadIds, lesiones } = matchData;
+    const workPlayers = players.map((p) => ({ ...p, scores: [...p.scores] }));
+    const byId = Object.fromEntries(workPlayers.map((p) => [p.id, p]));
+    const minutosDe = (jugadorId, enXI) => {
+        if (!enXI) {
+            const s = subs.find((s) => s.entra === jugadorId);
+            return s ? 90 - s.minuto : 0;
+        }
+        const s = subs.find((s) => s.sale === jugadorId);
+        return s ? s.minuto : 90;
+    };
+    const ids = new Set([...localXI, ...visXI]);
+    subs.forEach((s) => ids.add(s.entra));
+    ids.forEach((id) => {
+        const g = byId[id];
+        if (!g)
+            return;
+        const enXI = localXI.includes(id) || visXI.includes(id);
+        const min = minutosDe(id, enXI);
+        const golesP = eventos.filter((e) => e.jugador === id && !e.propia).length;
+        const asistP = eventos.filter((e) => e.asistencia === id).length;
+        const amarillaP = tarjetas.filter((t) => t.jugador === id && t.tipo === "amarilla").length;
+        const rojaP = tarjetas.filter((t) => t.jugador === id && t.tipo === "roja").length;
+        if (min > 0) {
+            g.partidosJugados = Math.max(0, g.partidosJugados - 1);
+            g.minutosJugados = Math.max(0, g.minutosJugados - min);
+        }
+        g.goles = Math.max(0, g.goles - golesP);
+        g.asistencias = Math.max(0, g.asistencias - asistP);
+        const expulsadoEnPartido = rojaP > 0 || amarillaP >= 2;
+        if (expulsadoEnPartido)
+            g.sancionJornadas = Math.max(0, (g.sancionJornadas || 0) - 1);
+        if (g.amarillas > 0 && g.amarillas % 3 === 0 && amarillaP > 0)
+            g.sancionJornadas = Math.max(0, (g.sancionJornadas || 0) - 1);
+        g.amarillas = Math.max(0, g.amarillas - amarillaP);
+        g.rojas = Math.max(0, g.rojas - rojaP);
+        const scoreVal = scores[id] != null ? scores[id] : sugerirScore(golesP, asistP, amarillaP, rojaP, min);
+        if (min >= 5) {
+            const idx = g.scores.lastIndexOf(scoreVal);
+            if (idx !== -1)
+                g.scores.splice(idx, 1);
+        }
+        if (g.posicion === "PT" && min > 0) {
+            const intervalo = intervaloEnCancha(id, localXI, visXI, subs);
+            if (intervalo)
+                g.golesRecibidos = Math.max(0, (g.golesRecibidos || 0) - golesRecibidosEnIntervalo(intervalo.equipo, intervalo.inicio, intervalo.fin, eventos));
+        }
+        g.valorMercado = calcValorMercado(g);
+    });
+    if (mvp && byId[mvp])
+        byId[mvp].mvps = Math.max(0, (byId[mvp].mvps || 0) - 1);
+    (lesiones || []).forEach((l) => {
+        const g = byId[l.jugador];
+        if (g)
+            g.jornadasLesionado = Math.max(0, (g.jornadasLesionado || 0) - (l.gravedad || 0));
+    });
+    [...(localSquadIds || []), ...(visSquadIds || [])].forEach((id) => {
+        const g = byId[id];
+        if (g && !ids.has(id) && (g.sancionJornadas || 0) > 0)
+            g.sancionJornadas += 1;
+        if (g && !ids.has(id) && (g.jornadasLesionado || 0) > 0)
+            g.jornadasLesionado += 1;
+    });
+    return workPlayers;
+}
+// ---------- Libro diario / historial financiero de los equipos ----------
+// Aplica un movimiento de caja a un equipo (monto positivo = ingreso, negativo = egreso), actualiza su
+// presupuesto y deja registrado el evento en su historialCaja para que quede como libro diario transparente.
+// jornada es opcional (null si el movimiento no está atado a una jornada concreta, ej. un fichaje).
+function registrarMovimientoCaja(team, { concepto, monto, jornada }) {
+    const montoRedondeado = Math.round(monto || 0);
+    if (!montoRedondeado)
+        return team;
+    const saldoResultante = Math.round((team.presupuesto || 0) + montoRedondeado);
+    const movimiento = {
+        id: uid("mov"),
+        tipo: montoRedondeado > 0 ? "INGRESO" : "EGRESO",
+        concepto,
+        monto: Math.abs(montoRedondeado),
+        saldoResultante,
+        jornada: jornada != null ? jornada : null,
+    };
+    return { ...team, presupuesto: saldoResultante, historialCaja: [...(team.historialCaja || []), movimiento] };
+}
+// Bono de una jornada clave: mejor posición en la tabla de la fase = mayor plus, pero siempre modesto
+// (entre 0.5% y 3% del presupuesto base del equipo), para no desequilibrar el mercado.
+function calcularBonoPorPosicion(rank, totalEquipos, presupuestoBase) {
+    const factor = totalEquipos > 1 ? 0.005 + 0.025 * (totalEquipos - rank) / (totalEquipos - 1) : 0.03;
+    return Math.round((presupuestoBase * factor) / 1000) * 1000;
+}
+// Aplica (signo +1) o revierte (signo -1) el plus económico de jornada a todos los equipos, según su
+// posición en la tabla de la fase (jornadasFase) calculada hasta (e incluyendo) la jornada indicada.
+function bonoJornadaEquipos(teams, jornadasFase, jornadaNumero, signo) {
+    const tabla = calcularTabla(teams, jornadasFase.filter((j) => j.numero <= jornadaNumero));
+    const total = tabla.length;
+    return teams.map((t) => {
+        const rank = tabla.findIndex((row) => row.id === t.id) + 1;
+        if (rank <= 0)
+            return t;
+        const bono = calcularBonoPorPosicion(rank, total, t.presupuestoBase);
+        const concepto = signo > 0
+            ? `Bono de jornada ${jornadaNumero} (posición #${rank} de ${total})`
+            : `Reversión de bono de jornada ${jornadaNumero}`;
+        return registrarMovimientoCaja(t, { concepto, monto: signo * bono, jornada: jornadaNumero });
+    });
+}
+// Aplica al presupuesto de los dos equipos el resultado de un partido.
+function aplicarEfectosPresupuesto(teams, equipoLocalId, equipoVisId, golesLocal, golesVis, jornadaNumero) {
+    return teams.map((t) => {
+        if (t.id !== equipoLocalId && t.id !== equipoVisId)
+            return t;
+        const esLocal = t.id === equipoLocalId;
+        const gf = esLocal ? golesLocal : golesVis, gc = esLocal ? golesVis : golesLocal;
+        let delta = 0;
+        let resultado = "";
+        if (gf > gc) {
+            delta = t.presupuestoBase * 0.05;
+            resultado = "Victoria";
+        }
+        else if (gf === gc) {
+            delta = t.presupuestoBase * 0.01;
+            resultado = "Empate";
+        }
+        else {
+            delta = -t.presupuestoBase * 0.02;
+            resultado = "Derrota";
+        }
+        delta += gf * t.presupuestoBase * 0.005;
+        const rival = teams.find((r) => r.id === (esLocal ? equipoVisId : equipoLocalId));
+        const concepto = `${resultado} ${gf}-${gc}${rival ? ` vs ${rival.nombre}` : ""}${jornadaNumero != null ? ` (J${jornadaNumero})` : ""}`;
+        return registrarMovimientoCaja(t, { concepto, monto: delta, jornada: jornadaNumero != null ? jornadaNumero : null });
+    });
+}
+// Inverso de aplicarEfectosPresupuesto.
+function revertirEfectosPresupuesto(teams, equipoLocalId, equipoVisId, golesLocal, golesVis, jornadaNumero) {
+    return teams.map((t) => {
+        if (t.id !== equipoLocalId && t.id !== equipoVisId)
+            return t;
+        const esLocal = t.id === equipoLocalId;
+        const gf = esLocal ? golesLocal : golesVis, gc = esLocal ? golesVis : golesLocal;
+        let delta = 0;
+        if (gf > gc)
+            delta = t.presupuestoBase * 0.05;
+        else if (gf === gc)
+            delta = t.presupuestoBase * 0.01;
+        else
+            delta = -t.presupuestoBase * 0.02;
+        delta += gf * t.presupuestoBase * 0.005;
+        const concepto = `Reversión de resultado ${gf}-${gc}${jornadaNumero != null ? ` (J${jornadaNumero})` : ""}`;
+        return registrarMovimientoCaja(t, { concepto, monto: -delta, jornada: jornadaNumero != null ? jornadaNumero : null });
+    });
+}
+// Revierte un partido ya guardado: deshace las estadísticas de los jugadores implicados y el
+// dinero ganado o perdido por el resultado, y deja el partido como "no jugado".
+function reiniciarPartido(partido, jnNumero, { players, setPlayers, teams, setTeams, jornadas, setJornadas }) {
+    if (!partido || !partido.jugado)
+        return;
+    if (!confirm("¿Reiniciar este partido? Se deshará el marcador, las estadísticas de los jugadores implicados y el dinero que ganó o perdió cada equipo por este resultado."))
+        return;
+    if (partido.matchData)
+        setPlayers(revertirEfectosJugadores(players, partido.matchData));
+    let nuevosTeams = revertirEfectosPresupuesto(teams, partido.local, partido.visitante, partido.golesLocal, partido.golesVisitante, jnNumero);
+    const jornada = jornadas.find((j) => j.numero === jnNumero);
+    const teniaBono = !!(jornada && jornada.bonoAplicado);
+    if (teniaBono)
+        nuevosTeams = bonoJornadaEquipos(nuevosTeams, jornadas, jnNumero, -1);
+    setTeams(nuevosTeams);
+    setJornadas(jornadas.map((j) => j.numero !== jnNumero ? j : { ...j, bonoAplicado: teniaBono ? false : j.bonoAplicado, partidos: j.partidos.map((p) => p.id !== partido.id ? p : { ...p, jugado: false, golesLocal: 0, golesVisitante: 0, matchData: null }) }));
+}
+// Estadísticas de enfrentamientos directos, solo entre los equipos empatados a puntos (criterio oficial de clasificación)
+function headToHeadStats(teamIds, jornadas) {
+    const stats = {};
+    teamIds.forEach((id) => (stats[id] = { pts: 0, gf: 0, gc: 0 }));
+    jornadas.forEach((j) => j.partidos.forEach((p) => {
+        if (!p.jugado || !p.local || !p.visitante)
+            return;
+        if (!teamIds.includes(p.local) || !teamIds.includes(p.visitante))
+            return;
+        stats[p.local].gf += p.golesLocal;
+        stats[p.local].gc += p.golesVisitante;
+        stats[p.visitante].gf += p.golesVisitante;
+        stats[p.visitante].gc += p.golesLocal;
+        if (p.golesLocal > p.golesVisitante)
+            stats[p.local].pts += 3;
+        else if (p.golesLocal < p.golesVisitante)
+            stats[p.visitante].pts += 3;
+        else {
+            stats[p.local].pts += 1;
+            stats[p.visitante].pts += 1;
+        }
+    }));
+    return stats;
+}
+// Historial H2H (cara a cara) completo entre dos equipos a lo largo de todas las jornadas jugadas
+// (Apertura + Clausura + Liguilla), para mostrar contexto en la previa de un partido.
+// excludePartidoId permite descontar el propio partido que se está por jugar/editar, si ya estuviera cargado.
+function historialH2H(equipoAId, equipoBId, jornadas, excludePartidoId) {
+    let victoriasA = 0, victoriasB = 0, empates = 0, golesA = 0, golesB = 0, totalPJ = 0;
+    (jornadas || []).forEach((j) => j.partidos.forEach((p) => {
+        if (!p.jugado || p.id === excludePartidoId)
+            return;
+        const esAvsB = p.local === equipoAId && p.visitante === equipoBId;
+        const esBvsA = p.local === equipoBId && p.visitante === equipoAId;
+        if (!esAvsB && !esBvsA)
+            return;
+        const gA = esAvsB ? p.golesLocal : p.golesVisitante;
+        const gB = esAvsB ? p.golesVisitante : p.golesLocal;
+        golesA += gA;
+        golesB += gB;
+        totalPJ++;
+        if (gA > gB)
+            victoriasA++;
+        else if (gB > gA)
+            victoriasB++;
+        else
+            empates++;
+    }));
+    return { totalPJ, victoriasA, victoriasB, empates, golesA, golesB };
+}
+// Tabla general. Criterio oficial (PES17): 1) Puntos, 2) Puntos entre relevantes, 3) Dif. de gol entre
+// relevantes, 4) Goles a favor entre relevantes, 5) Dif. de gol general, 6) Goles a favor general,
+// 7) Orden de equipos (desempate final).
+function calcularTabla(teams, jornadas) {
+    const ordenTeams = {};
+    teams.forEach((t, i) => (ordenTeams[t.id] = i));
+    const stats = {};
+    teams.forEach((t) => (stats[t.id] = { id: t.id, nombre: t.nombre, escudo: t.escudo, pj: 0, pg: 0, pe: 0, pp: 0, gf: 0, gc: 0, pts: 0 }));
+    jornadas.forEach((j) => j.partidos.forEach((p) => {
+        if (!p.jugado || !p.local || !p.visitante)
+            return;
+        const L = stats[p.local], V = stats[p.visitante];
+        if (!L || !V)
+            return;
+        L.pj++;
+        V.pj++;
+        L.gf += p.golesLocal;
+        L.gc += p.golesVisitante;
+        V.gf += p.golesVisitante;
+        V.gc += p.golesLocal;
+        if (p.golesLocal > p.golesVisitante) {
+            L.pg++;
+            L.pts += 3;
+            V.pp++;
+        }
+        else if (p.golesLocal < p.golesVisitante) {
+            V.pg++;
+            V.pts += 3;
+            L.pp++;
+        }
+        else {
+            L.pe++;
+            V.pe++;
+            L.pts += 1;
+            V.pts += 1;
+        }
+    }));
+    const base = Object.values(stats).map((s) => ({ ...s, dg: s.gf - s.gc }));
+    const byId = {};
+    base.forEach((s) => (byId[s.id] = s));
+    // Criterio oficial (PES17): 1) Puntos  2) Puntos entre relevantes  3) Dif. de gol entre relevantes
+    // 4) Goles a favor entre relevantes  5) Dif. de gol general  6) Goles a favor general
+    // 7) Orden de carga de equipos (desempate final si persiste el empate)
+    // "Entre relevantes" se recalcula desde cero en cada nivel, usando solo los equipos que siguen
+    // empatados en ese punto: si un equipo ya se separó del grupo (p. ej. por tener más puntos entre
+    // relevantes), los partidos contra él dejan de contar para el resto, para no arrastrar goles de un
+    // enfrentamiento que ya no es relevante para la comparación.
+    function agrupar(ids, valorDe) {
+        const valores = [...new Set(ids.map(valorDe))].sort((a, b) => b - a);
+        return valores.map((v) => ids.filter((id) => valorDe(id) === v));
+    }
+    function porGeneral(ids) {
+        return [...ids].sort((a, b) => {
+            const A = byId[a], B = byId[b];
+            if (B.dg !== A.dg)
+                return B.dg - A.dg;
+            if (B.gf !== A.gf)
+                return B.gf - A.gf;
+            return ordenTeams[a] - ordenTeams[b];
+        });
+    }
+    function ordenar(ids) {
+        if (ids.length <= 1)
+            return ids;
+        const h2h = headToHeadStats(ids, jornadas);
+        const resultado = [];
+        agrupar(ids, (id) => h2h[id].pts).forEach((bloque) => {
+            if (bloque.length === 1) {
+                resultado.push(bloque[0]);
+                return;
+            }
+            if (bloque.length < ids.length) {
+                resultado.push(...ordenar(bloque));
+                return;
+            }
+            agrupar(bloque, (id) => h2h[id].gf - h2h[id].gc).forEach((bloque2) => {
+                if (bloque2.length === 1) {
+                    resultado.push(bloque2[0]);
+                    return;
+                }
+                if (bloque2.length < bloque.length) {
+                    resultado.push(...ordenar(bloque2));
+                    return;
+                }
+                agrupar(bloque2, (id) => h2h[id].gf).forEach((bloque3) => {
+                    if (bloque3.length === 1) {
+                        resultado.push(bloque3[0]);
+                        return;
+                    }
+                    if (bloque3.length < bloque2.length) {
+                        resultado.push(...ordenar(bloque3));
+                        return;
+                    }
+                    resultado.push(...porGeneral(bloque3));
+                });
+            });
+        });
+        return resultado;
+    }
+    const gruposPorPuntos = agrupar(base.map((s) => s.id), (id) => byId[id].pts);
+    const ordenFinal = [];
+    gruposPorPuntos.forEach((grupo) => ordenFinal.push(...ordenar(grupo)));
+    return ordenFinal.map((id) => byId[id]);
+}
+// Una jornada se considera "completa" cuando tiene al menos un partido con equipos asignados
+// y todos esos partidos ya se jugaron (los espacios sin equipos asignados no cuentan).
+function jornadaCompleta(jornada) {
+    const activos = (jornada && jornada.partidos ? jornada.partidos : []).filter((p) => p.local && p.visitante);
+    return activos.length > 0 && activos.every((p) => p.jugado);
+}
+// Una fase (Apertura o Clausura) está completa cuando existen sus 34 jornadas y todas están completas.
+function faseCompleta(jornadas) {
+    return !!jornadas && jornadas.length > 0 && jornadas.every(jornadaCompleta);
+}
+// Última jornada de la que hay al menos un partido jugado (o 0 si no se jugó ninguno).
+function ultimaJornadaJugada(jornadas) {
+    let max = 0;
+    jornadas.forEach((j) => {
+        if (j.partidos.some((p) => p.jugado))
+            max = Math.max(max, j.numero);
+    });
+    return max;
+}
+// Tabla tal como estaba ANTES de la última jornada jugada (excluye esa jornada completa de cada fase),
+// para poder compararla con la tabla actual y mostrar las flechas de cambio de posición.
+function calcularTablaAnterior(teams, gruposDeJornadas) {
+    const previas = [];
+    gruposDeJornadas.forEach((jornadas) => {
+        const ultima = ultimaJornadaJugada(jornadas);
+        previas.push(...jornadas.filter((j) => j.numero < ultima));
+    });
+    return calcularTabla(teams, previas);
+}
+// Arma la lista de 4 clasificados "parciales" (1° y 2° de Apertura y Clausura) y los 4 clasificados
+// por tabla general, saltando cualquier equipo que ya haya entrado por la vía parcial (el cupo pasa al siguiente).
+// Si un equipo clasifica dos veces por la vía parcial (p. ej. es 1° en Apertura y también 1° en Clausura),
+// el cupo repetido no bloquea la liguilla: se le asigna directo al siguiente equipo disponible en la tabla general.
+function calcularClasificadosLiguilla(tablaApertura, tablaClausura, tablaGeneral) {
+    const usados = new Set();
+    const siguienteDeGeneral = () => {
+        for (const row of tablaGeneral) {
+            if (!usados.has(row.id))
+                return row.id;
+        }
+        return null;
+    };
+    const resolverParcial = (label, equipo) => {
+        if (equipo && !usados.has(equipo.id)) {
+            usados.add(equipo.id);
+            return { label, id: equipo.id, sustituto: false };
+        }
+        // Cupo repetido (o sin equipo definido): pasa al siguiente disponible en la tabla general.
+        const id = siguienteDeGeneral();
+        if (id)
+            usados.add(id);
+        return { label, id, sustituto: true };
+    };
+    const parciales = [
+        resolverParcial("1\u00B0 Apertura", tablaApertura[0]),
+        resolverParcial("2\u00B0 Apertura", tablaApertura[1]),
+        resolverParcial("1\u00B0 Clausura", tablaClausura[0]),
+        resolverParcial("2\u00B0 Clausura", tablaClausura[1]),
+    ];
+    const generalClasificados = [];
+    for (const row of tablaGeneral) {
+        if (generalClasificados.length >= 4)
+            break;
+        if (usados.has(row.id))
+            continue;
+        generalClasificados.push(row.id);
+        usados.add(row.id);
+    }
+    const huboSustitutos = parciales.some((p) => p.sustituto);
+    return {
+        parciales,
+        generalClasificados,
+        repetidos: false,
+        huboSustitutos,
+        completo: parciales.every((p) => p.id) && generalClasificados.length === 4,
+    };
+}
+// Arma los 4 cruces de Cuartos de Final según la regla acordada:
+// 1° Clausura vs 4° General · 1° Apertura vs 3° General · 2° Clausura vs 2° General · 2° Apertura vs 1° General.
+function armarCruceCuartos(clasificados) {
+    const p = clasificados.parciales; // [0]1°Ap [1]2°Ap [2]1°Cl [3]2°Cl
+    const g = clasificados.generalClasificados; // [0]1°Gral ... [3]4°Gral
+    return [
+        { label: "Cuartos 1", equipoA: p[2].id, labelA: "1\u00B0 Clausura", equipoB: g[3], labelB: "4\u00B0 Gral" },
+        { label: "Cuartos 2", equipoA: p[0].id, labelA: "1\u00B0 Apertura", equipoB: g[2], labelB: "3\u00B0 Gral" },
+        { label: "Cuartos 3", equipoA: p[3].id, labelA: "2\u00B0 Clausura", equipoB: g[1], labelB: "2\u00B0 Gral" },
+        { label: "Cuartos 4", equipoA: p[1].id, labelA: "2\u00B0 Apertura", equipoB: g[0], labelB: "1\u00B0 Gral" },
+    ];
+}
+// Genera las dos jornadas (ida y vuelta) de una ronda de liguilla a partir de una lista de series {label, equipoA, equipoB}.
+function generarRondaLiguilla(series, nombreRonda, numeroBase) {
+    const ida = series.map((s) => ({ id: uid("pt"), local: s.equipoA, visitante: s.equipoB, jugado: false, golesLocal: 0, golesVisitante: 0, matchData: null, fecha: "", serie: s.label, penalesGanador: null, tandaPenales: [] }));
+    const vuelta = series.map((s) => ({ id: uid("pt"), local: s.equipoB, visitante: s.equipoA, jugado: false, golesLocal: 0, golesVisitante: 0, matchData: null, fecha: "", serie: s.label, penalesGanador: null, tandaPenales: [] }));
+    return [
+        { numero: numeroBase, nombre: `${nombreRonda} \u2014 Ida`, partidos: ida, xiIdeal: null },
+        { numero: numeroBase + 1, nombre: `${nombreRonda} \u2014 Vuelta`, partidos: vuelta, xiIdeal: null },
+    ];
+}
+// Determina el ganador de una serie ida+vuelta por gol global; si hay empate global, se usa el gol de visitante
+// (goles marcados por cada equipo jugando como visitante en la serie); si persiste el empate, usa penalesGanador
+// (cargado a mano en la vuelta).
+function ganadorSerie(partidoIda, partidoVuelta) {
+    if (!partidoIda || !partidoVuelta || !partidoIda.jugado || !partidoVuelta.jugado)
+        return null;
+    const equipoA = partidoIda.local, equipoB = partidoIda.visitante;
+    const golesA = partidoIda.golesLocal + partidoVuelta.golesVisitante;
+    const golesB = partidoIda.golesVisitante + partidoVuelta.golesLocal;
+    if (golesA > golesB)
+        return equipoA;
+    if (golesB > golesA)
+        return equipoB;
+    // Empate global: gol de visitante. A jugó de visitante en la vuelta; B jugó de visitante en la ida.
+    const golesVisitanteA = partidoVuelta.golesVisitante;
+    const golesVisitanteB = partidoIda.golesVisitante;
+    if (golesVisitanteA > golesVisitanteB)
+        return equipoA;
+    if (golesVisitanteB > golesVisitanteA)
+        return equipoB;
+    const tanda = resultadoTandaPenales(partidoVuelta.tandaPenales);
+    if (tanda.terminada)
+        return tanda.ganador === "A" ? equipoA : equipoB;
+    // Compatibilidad con series viejas definidas antes de tener la tanda tiro a tiro.
+    if (partidoVuelta.penalesGanador === "A")
+        return equipoA;
+    if (partidoVuelta.penalesGanador === "B")
+        return equipoB;
+    return null;
+}
+// Indica si una serie sigue empatada incluso después del criterio de gol de visitante, es decir si hace
+// falta definirla por penales.
+function serieRequierePenales(partidoIda, partidoVuelta) {
+    if (!partidoIda || !partidoVuelta || !partidoIda.jugado || !partidoVuelta.jugado)
+        return false;
+    const golesA = partidoIda.golesLocal + partidoVuelta.golesVisitante;
+    const golesB = partidoIda.golesVisitante + partidoVuelta.golesLocal;
+    if (golesA !== golesB)
+        return false;
+    const golesVisitanteA = partidoVuelta.golesVisitante;
+    const golesVisitanteB = partidoIda.golesVisitante;
+    return golesVisitanteA === golesVisitanteB;
+}
+// Evalúa una tanda de penales (lista ordenada de tiros {equipo:"A"|"B", gol:boolean}) siguiendo las reglas
+// reales: 5 tiros por equipo y, si persiste el empate, muerte súbita de a uno hasta que se rompa la igualdad
+// tras la misma cantidad de tiros. Además corta apenas un equipo queda matemáticamente indefinible.
+function resultadoTandaPenales(tiros) {
+    const lista = tiros || [];
+    let tA = 0, tB = 0, gA = 0, gB = 0;
+    for (const t of lista) {
+        if (t.equipo === "A") { tA++; if (t.gol) gA++; }
+        else { tB++; if (t.gol) gB++; }
+        if (tA < 5 || tB < 5) {
+            const remA = Math.max(0, 5 - tA), remB = Math.max(0, 5 - tB);
+            if (gA > gB + remB)
+                return { terminada: true, ganador: "A", golesA: gA, golesB: gB, tirosA: tA, tirosB: tB };
+            if (gB > gA + remA)
+                return { terminada: true, ganador: "B", golesA: gA, golesB: gB, tirosA: tA, tirosB: tB };
+        }
+        else if (tA === tB && gA !== gB) {
+            return { terminada: true, ganador: gA > gB ? "A" : "B", golesA: gA, golesB: gB, tirosA: tA, tirosB: tB };
+        }
+    }
+    return { terminada: false, ganador: null, golesA: gA, golesB: gB, tirosA: tA, tirosB: tB };
+}
+// Indica a quién le toca tirar el próximo penal ("A" o "B"): A siempre abre cada ronda.
+function turnoTandaPenales(tiros) {
+    const lista = tiros || [];
+    const tA = lista.filter((t) => t.equipo === "A").length;
+    const tB = lista.filter((t) => t.equipo === "B").length;
+    return tA === tB ? "A" : "B";
+}
+// A partir de las jornadas de liguilla ya jugadas, arma/avanza automáticamente semifinal y final cuando corresponde.
+function avanzarLiguilla(jornadasLiguilla) {
+    let jl = jornadasLiguilla;
+    const porNumero = (n) => jl.find((j) => j.numero === n);
+    const cuartosIda = porNumero(1), cuartosVuelta = porNumero(2);
+    if (!cuartosIda || !cuartosVuelta)
+        return jl;
+    const ganadoresCuartos = cuartosIda.partidos.map((pIda, i) => ganadorSerie(pIda, cuartosVuelta.partidos[i]));
+    if (ganadoresCuartos.every(Boolean) && !porNumero(3)) {
+        const seriesSemis = [
+            { label: "Semifinal 1", equipoA: ganadoresCuartos[0], equipoB: ganadoresCuartos[1] },
+            { label: "Semifinal 2", equipoA: ganadoresCuartos[2], equipoB: ganadoresCuartos[3] },
+        ];
+        jl = [...jl, ...generarRondaLiguilla(seriesSemis, "Semifinal", 3)];
+    }
+    const semiIda = jl.find((j) => j.numero === 3), semiVuelta = jl.find((j) => j.numero === 4);
+    if (semiIda && semiVuelta) {
+        const ganadoresSemis = semiIda.partidos.map((pIda, i) => ganadorSerie(pIda, semiVuelta.partidos[i]));
+        if (ganadoresSemis.every(Boolean) && !jl.find((j) => j.numero === 5)) {
+            const serieFinal = [{ label: "Final", equipoA: ganadoresSemis[0], equipoB: ganadoresSemis[1] }];
+            jl = [...jl, ...generarRondaLiguilla(serieFinal, "Final", 5)];
+        }
+    }
+    return jl;
+}
+// ---------- Imagen: subir desde el dispositivo y comprimir ----------
+function fileToDataURL(file, maxDim = 220, quality = 0.72) {
+    return new Promise((resolve, reject) => {
+        if (!file)
+            return reject("Sin archivo");
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = new Image();
+            img.onload = () => {
+                let w = img.width, h = img.height;
+                if (w > h) {
+                    if (w > maxDim) {
+                        h = Math.round(h * (maxDim / w));
+                        w = maxDim;
+                    }
+                }
+                else {
+                    if (h > maxDim) {
+                        w = Math.round(w * (maxDim / h));
+                        h = maxDim;
+                    }
+                }
+                const canvas = document.createElement("canvas");
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext("2d");
+                ctx.fillStyle = "#ffffff";
+                ctx.fillRect(0, 0, w, h);
+                ctx.drawImage(img, 0, 0, w, h);
+                resolve(canvas.toDataURL("image/jpeg", quality));
+            };
+            img.onerror = reject;
+            img.src = e.target.result;
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+    });
+}
+function FotoUpload({ value, onChange, size = 64, label = "Subir foto" }) {
+    const inputRef = useRef(null);
+    const handle = async (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (!f)
+            return;
+        try {
+            const url = await fileToDataURL(f);
+            onChange(url);
+        }
+        catch (err) {
+            alert("No se pudo cargar la imagen.");
+        }
+        e.target.value = "";
+    };
+    return (React.createElement("div", { className: "flex items-center gap-3" },
+        value
+            ? React.createElement("img", { src: value, style: { width: size, height: size }, className: "rounded-lg object-cover" })
+            : React.createElement("div", { className: "avatar-ph rounded-lg", style: { width: size, height: size } },
+                React.createElement(Icon, { size: size * 0.4 }, "\uD83D\uDDBC\uFE0F")),
+        React.createElement("div", { className: "flex flex-col gap-1.5" },
+            React.createElement("label", { className: "file-btn" },
+                React.createElement(Icon, { size: 13 }, "\uD83D\uDCF7"),
+                " ",
+                label,
+                React.createElement("input", { ref: inputRef, type: "file", accept: "image/*", className: "hidden", onChange: handle })),
+            value && React.createElement("button", { type: "button", onClick: () => onChange(""), className: "text-xs text-red-500 text-left" }, "Quitar imagen"))));
+}
+// ---------- Persistencia local (localStorage) ----------
+function loadData() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw)
+            return null;
+        return JSON.parse(raw);
+    }
+    catch (e) {
+        return null;
+    }
+}
+function saveData(data) {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        return true;
+    }
+    catch (e) {
+        return false;
+    }
+}
+// Borrador de "Jugar partido" en curso (aún sin confirmar): se guarda aparte para que sobreviva a
+// cambios de pestaña/sección e incluso a cerrar y volver a abrir la página, hasta que se confirme o descarte.
+const STORAGE_KEY_DRAFT = STORAGE_KEY + "-draft-partido";
+function loadDraftPartido() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY_DRAFT);
+        if (!raw)
+            return null;
+        return JSON.parse(raw);
+    }
+    catch (e) {
+        return null;
+    }
+}
+function saveDraftPartido(draft) {
+    try {
+        localStorage.setItem(STORAGE_KEY_DRAFT, JSON.stringify(draft));
+        return true;
+    }
+    catch (e) {
+        return false;
+    }
+}
+// Recuerda selecciones de navegación (pestaña activa, jornada elegida, sub-pestañas, etc.) para que
+// no se pierdan al cambiar de sección o al volver a entrar a la app, aunque no se haya "confirmado" nada.
+function usePersistedState(key, initialValue) {
+    const storageKey = STORAGE_KEY + "-ui-" + key;
+    const [state, setState] = useState(() => {
+        try {
+            const raw = localStorage.getItem(storageKey);
+            if (raw !== null)
+                return JSON.parse(raw);
+        }
+        catch (e) { }
+        return typeof initialValue === "function" ? initialValue() : initialValue;
+    });
+    useEffect(() => {
+        try {
+            localStorage.setItem(storageKey, JSON.stringify(state));
+        }
+        catch (e) { }
+    }, [state]);
+    return [state, setState];
+}
+// ---------- App ----------
+function TorneoApp() {
+    const [teams, setTeams] = useState([]);
+    const [players, setPlayers] = useState([]);
+    const [fases, setFases] = useState({ apertura: [], clausura: [], liguilla: [] });
+    const [faseActiva, setFaseActiva] = usePersistedState("faseActiva", "apertura");
+    const [transfers, setTransfers] = useState([]);
+    // XI Ideal "del Torneo": uno completamente independiente por período (Torneo completo / Apertura / Clausura / Liguilla).
+    // Es manual (igual que el XI de la Jornada) y cada período guarda su propia selección, sin heredar ni mezclarse con los demás.
+    const [xiTorneo, setXiTorneo] = useState({ torneo: null, apertura: null, clausura: null, liguilla: null });
+    const [tab, setTab] = usePersistedState("tab", "dashboard");
+    const [selectedTeamId, setSelectedTeamId] = useState(null);
+    const [loaded, setLoaded] = useState(false);
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+    const [mobileNavOpen, setMobileNavOpen] = useState(false);
+    const [draftPartido, setDraftPartido] = useState(draftPartidoVacio);
+    const saveTimer = useRef(null);
+    const draftSaveTimer = useRef(null);
+    useEffect(() => {
+        const dp = loadDraftPartido();
+        if (dp)
+            setDraftPartido({ ...draftPartidoVacio(), ...dp });
+        const d = loadData();
+        if (d) {
+            setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
+            setPlayers(d.players || []);
+            setTransfers(d.transfers || []);
+            setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
+            if (d.fases) {
+                setFases({
+                    apertura: d.fases.apertura && d.fases.apertura.length ? d.fases.apertura : generarJornadas(),
+                    clausura: d.fases.clausura && d.fases.clausura.length ? d.fases.clausura : generarJornadas(),
+                    liguilla: d.fases.liguilla || [],
+                });
+            }
+            else if (d.jornadas && d.jornadas.length) {
+                // Migración desde el formato viejo (una sola tabla/calendario): lo ya cargado pasa a ser Apertura.
+                setFases({ apertura: d.jornadas, clausura: generarJornadas(), liguilla: [] });
+            }
+            else {
+                setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
+            }
+        }
+        else
+            setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
+        setLoaded(true);
+    }, []);
+    useEffect(() => {
+        if (!loaded)
+            return;
+        if (saveTimer.current)
+            clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(() => saveData({ teams, players, fases, transfers, xiTorneo }), 400);
+        return () => clearTimeout(saveTimer.current);
+    }, [teams, players, fases, transfers, xiTorneo, loaded]);
+    useEffect(() => {
+        if (!loaded)
+            return;
+        if (draftSaveTimer.current)
+            clearTimeout(draftSaveTimer.current);
+        draftSaveTimer.current = setTimeout(() => saveDraftPartido(draftPartido), 400);
+        return () => clearTimeout(draftSaveTimer.current);
+    }, [draftPartido, loaded]);
+    const tablaApertura = useMemo(() => calcularTabla(teams, fases.apertura), [teams, fases.apertura]);
+    const tablaClausura = useMemo(() => calcularTabla(teams, fases.clausura), [teams, fases.clausura]);
+    const tablaGeneral = useMemo(() => calcularTabla(teams, [...fases.apertura, ...fases.clausura]), [teams, fases.apertura, fases.clausura]);
+    const tablaAperturaAnterior = useMemo(() => calcularTablaAnterior(teams, [fases.apertura]), [teams, fases.apertura]);
+    const tablaClausuraAnterior = useMemo(() => calcularTablaAnterior(teams, [fases.clausura]), [teams, fases.clausura]);
+    const tablaGeneralAnterior = useMemo(() => calcularTablaAnterior(teams, [fases.apertura, fases.clausura]), [teams, fases.apertura, fases.clausura]);
+    const todasLasJornadas = useMemo(() => [...fases.apertura, ...fases.clausura, ...fases.liguilla], [fases]);
+    const vecesXi = useMemo(() => contarAparicionesXi(todasLasJornadas), [todasLasJornadas]);
+    const aperturaCompleta = useMemo(() => faseCompleta(fases.apertura), [fases.apertura]);
+    const clausuraCompleta = useMemo(() => faseCompleta(fases.clausura), [fases.clausura]);
+    const clausuraIniciada = useMemo(() => ultimaJornadaJugada(fases.clausura) > 0, [fases.clausura]);
+    const liguillaIniciada = useMemo(() => ultimaJornadaJugada(fases.liguilla) > 0, [fases.liguilla]);
+    // Ventana de Apertura: se abre al terminar el Apertura y se cierra en cuanto arranca el Clausura.
+    // Ventana de Clausura: se abre al terminar el Clausura y se cierra en cuanto arranca la Liguilla.
+    const mercadoAbierto = (aperturaCompleta && !clausuraIniciada) || (clausuraCompleta && !liguillaIniciada);
+    const jornadasFase = fases[faseActiva] || [];
+    const setJornadasFase = (nuevasJornadas) => setFases((f) => ({ ...f, [faseActiva]: nuevasJornadas }));
+    const NAV = [
+        { id: "dashboard", label: "General", icon: "🏠" },
+        { id: "tabla", label: "Tabla", icon: "📊" },
+        { id: "calendario", label: "Calendario", icon: "📅" },
+        { id: "partido", label: "Partidos", icon: "⚔️" },
+        { id: "rankings", label: "Rankings", icon: "🏆" },
+        { id: "estadisticas", label: "Estadísticas", icon: "📈" },
+        { id: "xiideal", label: "XI de la Jornada", icon: "🌟" },
+        { id: "xiidealtorneo", label: "XI Ideal del Torneo", icon: "🏆" },
+        { id: "premios", label: "Premios de Temporada", icon: "🏅" },
+        { id: "mercado", label: "Mercado", icon: "🛒" },
+        { id: "jugadores", label: "Jugadores", icon: "🔍" },
+        { id: "sanciones", label: "Sanciones", icon: "🛡️" },
+        { id: "equipos", label: "Equipos", icon: "👕" },
+        { id: "extras", label: "Extras", icon: "🧰" },
+    ];
+    if (!loaded)
+        return React.createElement("div", { className: "app-bg flex items-center justify-center min-h-screen" }, "Cargando torneo\u2026");
+    const goTab = (id) => { setTab(id); if (id !== "equipos")
+        setSelectedTeamId(null); setMobileNavOpen(false); };
+    const exportarDatos = () => {
+        const blob = new Blob([JSON.stringify({ teams, players, fases, transfers, xiTorneo }, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `torneo-pes2017-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+    const importarDatos = (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (!f)
+            return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            try {
+                const d = JSON.parse(ev.target.result);
+                if (!confirm("Esto reemplazará todos los datos actuales por los de la copia. ¿Continuar?"))
+                    return;
+                setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
+                setPlayers(d.players || []);
+                if (d.fases) {
+                    setFases({
+                        apertura: d.fases.apertura && d.fases.apertura.length ? d.fases.apertura : generarJornadas(),
+                        clausura: d.fases.clausura && d.fases.clausura.length ? d.fases.clausura : generarJornadas(),
+                        liguilla: d.fases.liguilla || [],
+                    });
+                }
+                else {
+                    setFases({ apertura: d.jornadas && d.jornadas.length ? d.jornadas : generarJornadas(), clausura: generarJornadas(), liguilla: [] });
+                }
+                setTransfers(d.transfers || []);
+                setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
+                alert("Copia importada correctamente.");
+            }
+            catch (err) {
+                alert("El archivo no es una copia válida.");
+            }
+        };
+        reader.readAsText(f);
+        e.target.value = "";
+    };
+    const reiniciarLiga = () => {
+        if (!confirm("Esto borra todos los partidos (jugados y por jugar) de Apertura, Clausura y Liguilla, deja el calendario en blanco y devuelve a cada equipo su presupuesto inicial. Las estad\u00EDsticas de los jugadores (goles, asistencias, tarjetas, minutos) tambi\u00E9n se ponen a cero. Los equipos y jugadores (nombres, fotos, valoraciones, plantillas) NO se borran. ¿Continuar?"))
+            return;
+        setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
+        setPlayers(players.map((p) => {
+            const limpio = { ...p, goles: 0, asistencias: 0, partidosJugados: 0, minutosJugados: 0, scores: [], amarillas: 0, rojas: 0, sancionJornadas: 0, jornadasLesionado: 0 };
+            limpio.valorMercado = calcValorMercado(limpio);
+            return limpio;
+        }));
+        setTeams(teams.map((t) => ({ ...t, presupuesto: t.presupuestoBase, historialCaja: [] })));
+        alert("Liga reiniciada. Equipos y jugadores conservados.");
+    };
+    const borrarTodo = () => {
+        if (!confirm("Esto borra TODO: equipos, jugadores, calendario, resultados y fichajes. No se puede deshacer. ¿Seguro que quieres continuar?"))
+            return;
+        if (!confirm("\u00DAltima confirmaci\u00F3n: se perder\u00E1 absolutamente todo. ¿Confirmas el borrado total?"))
+            return;
+        setTeams([]);
+        setPlayers([]);
+        setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
+        setTransfers([]);
+        setXiTorneo({ torneo: null, apertura: null, clausura: null, liguilla: null });
+        setDraftPartido(draftPartidoVacio());
+        try {
+            localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(STORAGE_KEY_DRAFT);
+        }
+        catch (e) { }
+        setSelectedTeamId(null);
+        alert("Todos los datos fueron borrados.");
+    };
+    return (React.createElement("div", { className: "app-bg app-shell" },
+        React.createElement("div", { className: "mobile-topbar" },
+            React.createElement("button", { type: "button", className: "mobile-hamburger", onClick: () => setMobileNavOpen(true), "aria-label": "Abrir men\u00FA" },
+                React.createElement("span", null), React.createElement("span", null), React.createElement("span", null)),
+            React.createElement("span", { className: "mobile-topbar-title" }, "Liga ", React.createElement("span", { className: "opacity-90" }, "KONAMI"))),
+        mobileNavOpen && React.createElement("div", { className: "mobile-backdrop", onClick: () => setMobileNavOpen(false) }),
+        React.createElement("div", { className: "sidebar-spacer" }),
+        React.createElement(Sidebar, { NAV: NAV, tab: tab, goTab: goTab, collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed, mobileOpen: mobileNavOpen, onCloseMobile: () => setMobileNavOpen(false) }),
+        React.createElement("div", { className: "app-main-col" },
+            React.createElement("main", { className: "p-3 md:p-6 max-w-6xl mx-auto w-full" },
+                ["calendario", "partido", "xiideal"].includes(tab) && React.createElement(FaseSwitcher, { faseActiva: faseActiva, setFaseActiva: setFaseActiva, liguillaDisponible: fases.liguilla.length > 0 }),
+                tab === "dashboard" && React.createElement(Dashboard, { teams: teams, players: players, fases: fases, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, setTab: goTab }),
+                tab === "equipos" && !selectedTeamId && React.createElement(EquiposLista, { teams: teams, setTeams: setTeams, players: players, onOpen: setSelectedTeamId }),
+                tab === "equipos" && selectedTeamId && React.createElement(EquipoDetalle, { teamId: selectedTeamId, teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, onBack: () => setSelectedTeamId(null) }),
+                tab === "tabla" && React.createElement(TablaTabs, { teams: teams, players: players, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, tablaAperturaAnterior: tablaAperturaAnterior, tablaClausuraAnterior: tablaClausuraAnterior, tablaGeneralAnterior: tablaGeneralAnterior, fases: fases, setFases: setFases, setTab: goTab, setFaseActiva: setFaseActiva }),
+                tab === "calendario" && React.createElement(Calendario, { key: faseActiva, teams: teams, jornadas: jornadasFase, setJornadas: setJornadasFase, setTab: goTab, players: players, setPlayers: setPlayers, setTeams: setTeams }),
+                tab === "partido" && React.createElement(JugarPartido, { key: faseActiva, teams: teams, players: players, setPlayers: setPlayers, jornadas: jornadasFase, setJornadas: setJornadasFase, setTeams: setTeams, draft: draftPartido, setDraft: setDraftPartido, faseActiva: faseActiva, todasLasJornadas: todasLasJornadas }),
+                tab === "xiideal" && React.createElement(XiIdealJornada, { key: faseActiva, jornadas: jornadasFase, setJornadas: setJornadasFase, teams: teams, players: players, vecesXi: vecesXi }),
+                tab === "xiidealtorneo" && React.createElement(XiIdealTorneo, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players, vecesXi: vecesXi, xiTorneo: xiTorneo, setXiTorneo: setXiTorneo }),
+                tab === "premios" && React.createElement(PremiosView, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players }),
+                tab === "mercado" && React.createElement(Mercado, { teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, transfers: transfers, setTransfers: setTransfers, abierto: mercadoAbierto, aperturaCompleta: aperturaCompleta, clausuraCompleta: clausuraCompleta, clausuraIniciada: clausuraIniciada, liguillaIniciada: liguillaIniciada }),
+                tab === "jugadores" && React.createElement(JugadoresView, { teams: teams, players: players, setPlayers: setPlayers }),
+                tab === "rankings" && React.createElement(Rankings, { players: players, teams: teams, jornadas: todasLasJornadas }),
+                tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
+                tab === "sanciones" && React.createElement(Sanciones, { players: players, setPlayers: setPlayers, teams: teams }),
+                tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo })))));
+}
+// ---------- Sidebar ----------
+function Sidebar({ NAV, tab, goTab, collapsed, setCollapsed, mobileOpen, onCloseMobile }) {
+    // En móvil el sidebar funciona como cajón (drawer): ignora "collapsed" y se muestra siempre expandido
+    // con etiquetas, controlado por mobileOpen/onCloseMobile en vez de por el ancho fijo de escritorio.
+    const collapsedEfectivo = collapsed;
+    return React.createElement("aside", { className: `sidebar${collapsedEfectivo ? " collapsed" : ""}${mobileOpen ? " mobile-open" : ""}` },
+        React.createElement("button", { className: "sidebar-brand", onClick: () => setCollapsed(!collapsed), title: collapsed ? "Expandir men\u00FA" : "Contraer men\u00FA", "aria-label": "Contraer o expandir men\u00FA", type: "button" },
+            React.createElement("img", { src: LOGO_LIGA, alt: "Liga KONAMI", style: { width: 26, height: 26, objectFit: "contain", flexShrink: 0 } }),
+            React.createElement("div", { className: "sidebar-brand-text font-black tracking-tight text-base leading-none" },
+                "Liga ",
+                React.createElement("span", { className: "opacity-90" }, "KONAMI"))),
+        onCloseMobile && React.createElement("button", { type: "button", className: "sidebar-mobile-close", onClick: onCloseMobile, "aria-label": "Cerrar men\u00FA" }, "\u2715"),
+        React.createElement("nav", { className: "sidebar-nav" }, NAV.map((n) => {
+            const active = tab === n.id;
+            return React.createElement("button", { key: n.id, onClick: () => goTab(n.id), title: n.label, className: `sidebar-link${active ? " active" : ""}` },
+                React.createElement("span", { className: "sidebar-icon" }, n.icon),
+                React.createElement("span", { className: "label" }, n.label));
+        })));
+}
+// Selector de fase (Apertura / Clausura / Liguilla) usado en Calendario, Jugar partido y XI Ideal.
+function FaseSwitcher({ faseActiva, setFaseActiva, liguillaDisponible }) {
+    const OPCIONES = [["apertura", "Apertura"], ["clausura", "Clausura"], ["liguilla", "Liguilla"]];
+    return React.createElement("div", { className: "tabs-even mb-3" }, OPCIONES.map(([val, label]) => {
+        const disabled = val === "liguilla" && !liguillaDisponible;
+        return React.createElement("button", { key: val, type: "button", disabled: disabled, onClick: () => setFaseActiva(val), className: "text-xs font-bold px-3 py-1.5 rounded-full disabled:opacity-40", style: faseActiva === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label);
+    }));
+}
+// ---------- Dashboard ----------
+function InfoCard({ icon, label, children }) {
+    const arr = Array.isArray(children) ? children : [children];
+    const valor = arr[0];
+    const sub = arr[1];
+    return React.createElement("div", { className: "info-card" },
+        React.createElement("div", { className: "info-card-label" },
+            React.createElement(Icon, { size: 13 }, icon),
+            " ",
+            label),
+        React.createElement("div", { className: "info-card-value" }, valor),
+        sub && React.createElement("div", { className: "info-card-sub" }, sub));
+}
+function MediaCard({ icon, label, imgSrc, value, sub, onClick }) {
+    return React.createElement("div", { className: "wide-card" + (onClick ? " wide-card-clickable" : ""), onClick: onClick, role: onClick ? "button" : undefined, tabIndex: onClick ? 0 : undefined },
+        React.createElement("div", { className: "wide-card-media" },
+            imgSrc ? React.createElement("img", { src: imgSrc }) : React.createElement(Icon, { size: 22 }, icon)),
+        React.createElement("div", { className: "wide-card-body" },
+            React.createElement("div", { className: "wide-card-label" }, label),
+            React.createElement("div", { className: "wide-card-value" }, value),
+            sub && React.createElement("div", { className: "wide-card-sub" }, sub)));
+}
+// Miniventana de estadísticas al tocar una tarjeta de Líderes/Destacados en el Dashboard.
+// tipo "equipo": muestra PJ/PG/PE/PP/GF/GC/DG/Pts a partir de una fila de tabla.
+// tipo "jugador": muestra goles/asistencias/PJ/minutos/tarjetas/score a partir del objeto jugador.
+function StatMini({ label, value }) {
+    return React.createElement("div", { className: "bg-zinc-50 rounded-lg p-2 text-center" },
+        React.createElement("div", { className: "text-[10px] text-zinc-400 font-bold uppercase" }, label),
+        React.createElement("div", { className: "font-black text-sm" }, value));
+}
+function DetalleDashboardSheet({ detalle, onClose }) {
+    if (!detalle)
+        return null;
+    const { tipo, titulo } = detalle;
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex justify-between items-center mb-3" },
+                React.createElement("span", { className: "font-black text-lg" }, titulo),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            tipo === "equipo" && (() => {
+                const t = detalle.equipo;
+                return React.createElement("div", { className: "space-y-3" },
+                    React.createElement("div", { className: "flex items-center gap-3" },
+                        t.escudo ? React.createElement("img", { src: t.escudo, className: "w-14 h-14 rounded-full object-cover" }) : React.createElement("div", { className: "avatar-ph w-14 h-14 rounded-full text-sm font-bold" }, t.nombre ? t.nombre[0] : "?"),
+                        React.createElement("div", null,
+                            React.createElement("div", { className: "font-black text-base" }, t.nombre || "\u2014"),
+                            detalle.sub && React.createElement("div", { className: "text-xs text-zinc-500" }, detalle.sub))),
+                    t.pj !== undefined ? React.createElement("div", { className: "grid grid-cols-4 gap-2 text-xs" },
+                        React.createElement(StatMini, { label: "PJ", value: t.pj }),
+                        React.createElement(StatMini, { label: "PG", value: t.pg }),
+                        React.createElement(StatMini, { label: "PE", value: t.pe }),
+                        React.createElement(StatMini, { label: "PP", value: t.pp }),
+                        React.createElement(StatMini, { label: "GF", value: t.gf }),
+                        React.createElement(StatMini, { label: "GC", value: t.gc }),
+                        React.createElement(StatMini, { label: "DG", value: t.dg }),
+                        React.createElement(StatMini, { label: "Pts", value: t.pts })) : React.createElement("div", { className: "text-xs text-zinc-500" }, "Todav\u00EDa sin partidos registrados en esta fase."));
+            })(),
+            tipo === "jugador" && (() => {
+                const p = detalle.jugador;
+                return React.createElement("div", { className: "space-y-3" },
+                    React.createElement("div", { className: "flex items-center gap-3" },
+                        p.foto ? React.createElement("img", { src: p.foto, className: "w-14 h-14 rounded-full object-cover" }) : React.createElement("div", { className: "avatar-ph w-14 h-14 rounded-full text-sm font-bold" }, p.dorsal),
+                        React.createElement("div", null,
+                            React.createElement("div", { className: "font-black text-base" }, p.nombre),
+                            React.createElement("div", { className: "text-xs text-zinc-500" }, `#${p.dorsal} \u00B7 ${p.posicion} \u00B7 GRL ${p.valoracion} \u00B7 ${detalle.equipoNombre || ""}`))),
+                    React.createElement("div", { className: "grid grid-cols-4 gap-2 text-xs" },
+                        React.createElement(StatMini, { label: "Goles", value: p.goles || 0 }),
+                        React.createElement(StatMini, { label: "Asist.", value: p.asistencias || 0 }),
+                        React.createElement(StatMini, { label: "PJ", value: p.partidosJugados || 0 }),
+                        React.createElement(StatMini, { label: "Min.", value: p.minutosJugados || 0 }),
+                        React.createElement(StatMini, { label: "\uD83D\uDFE8", value: p.amarillas || 0 }),
+                        React.createElement(StatMini, { label: "\uD83D\uDFE5", value: p.rojas || 0 }),
+                        React.createElement(StatMini, { label: "MVPs", value: p.mvps || 0 }),
+                        React.createElement(StatMini, { label: "Score", value: p.scores && p.scores.length ? avg(p.scores).toFixed(1) : "\u2014" })));
+            })()));
+}
+function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaGeneral, setTab }) {
+    const contarJugados = (jornadas) => jornadas.reduce((a, j) => a + j.partidos.filter((p) => p.jugado).length, 0);
+    const contarTotal = (jornadas) => jornadas.reduce((a, j) => a + j.partidos.length, 0);
+    const jugados = contarJugados(fases.apertura) + contarJugados(fases.clausura) + contarJugados(fases.liguilla);
+    const total = JORNADAS_TOTAL * PARTIDOS_POR_JORNADA * 2 + contarTotal(fases.liguilla);
+    const nombreEquipoDe = (p) => { var _a; return ((_a = teams.find((t) => t.id === p.equipoId)) === null || _a === void 0 ? void 0 : _a.nombre) || ""; };
+    const goleador = [...players].filter((p) => p.goles > 0).sort((a, b) => b.goles - a.goles || nombreEquipoDe(a).localeCompare(nombreEquipoDe(b)))[0];
+    const asistidor = [...players].filter((p) => p.asistencias > 0).sort((a, b) => b.asistencias - a.asistencias || nombreEquipoDe(a).localeCompare(nombreEquipoDe(b)))[0];
+    const gaLider = [...players].filter((p) => (p.goles || 0) + (p.asistencias || 0) > 0).sort((a, b) => ((b.goles || 0) + (b.asistencias || 0)) - ((a.goles || 0) + (a.asistencias || 0)) || (b.goles || 0) - (a.goles || 0) || nombreEquipoDe(a).localeCompare(nombreEquipoDe(b)))[0];
+    const conScore = [...players].filter((p) => p.scores && p.scores.length > 0);
+    const mvpScore = conScore.sort((a, b) => avg(b.scores) - avg(a.scores) || nombreEquipoDe(a).localeCompare(nombreEquipoDe(b)))[0];
+    const finalIda = fases.liguilla.find((j) => j.numero === 5);
+    const finalVuelta = fases.liguilla.find((j) => j.numero === 6);
+    const campeonId = finalIda && finalVuelta ? ganadorSerie(finalIda.partidos[0], finalVuelta.partidos[0]) : null;
+    const campeon = campeonId ? teams.find((t) => t.id === campeonId) : null;
+    const campeonTabla = campeonId ? tablaGeneral.find((t) => t.id === campeonId) : null;
+    const [detalle, setDetalle] = useState(null);
+    const verEquipo = (titulo, equipo, sub) => equipo && setDetalle({ tipo: "equipo", titulo, equipo, sub });
+    const verJugador = (titulo, jugador) => jugador && setDetalle({ tipo: "jugador", titulo, jugador, equipoNombre: nombreEquipoDe(jugador) });
+    return (React.createElement("div", { className: "space-y-4" },
+        detalle && React.createElement(DetalleDashboardSheet, { detalle: detalle, onClose: () => setDetalle(null) }),
+        React.createElement("div", null,
+            React.createElement("div", { className: "dash-section-title" },
+                React.createElement(Icon, { size: 16 }, "\uD83D\uDCC1"),
+                " Datos"),
+            React.createElement("div", { className: "dash-row-2" },
+                React.createElement(StatCard, { label: "Equipos", value: `${teams.length}/${MAX_EQUIPOS}` }),
+                React.createElement(StatCard, { label: "Jugadores", value: players.length })),
+            React.createElement("div", { className: "dash-row" },
+                React.createElement(StatCard, { label: "Partidos jugados", value: `${jugados}/${total}` }))),
+        React.createElement("div", null,
+            React.createElement("div", { className: "dash-section-title", style: { color: "#8F9500" } },
+                React.createElement(Icon, { size: 16 }, "\uD83D\uDCCA"),
+                " L\u00EDderes"),
+            React.createElement("div", { className: "dash-row-2" },
+                React.createElement(MediaCard, { icon: "\uD83E\uDD47", label: "L\u00EDder Apertura", imgSrc: tablaApertura[0] && tablaApertura[0].escudo, value: tablaApertura[0] ? tablaApertura[0].nombre : "\u2014", sub: tablaApertura[0] ? `${tablaApertura[0].pts} pts` : null, onClick: () => verEquipo("L\u00EDder Apertura", tablaApertura[0], "Tabla Apertura") }),
+                React.createElement(MediaCard, { icon: "\uD83E\uDD47", label: "L\u00EDder Clausura", imgSrc: tablaClausura[0] && tablaClausura[0].escudo, value: tablaClausura[0] ? tablaClausura[0].nombre : "\u2014", sub: tablaClausura[0] ? `${tablaClausura[0].pts} pts` : null, onClick: () => verEquipo("L\u00EDder Clausura", tablaClausura[0], "Tabla Clausura") })),
+            React.createElement("div", { className: "dash-row" },
+                React.createElement(MediaCard, { icon: "\uD83D\uDCCA", label: "L\u00EDder General", imgSrc: tablaGeneral[0] && tablaGeneral[0].escudo, value: tablaGeneral[0] ? tablaGeneral[0].nombre : "\u2014", sub: tablaGeneral[0] ? `${tablaGeneral[0].pts} pts` : null, onClick: () => verEquipo("L\u00EDder General", tablaGeneral[0], "Tabla General (Apertura + Clausura)") })),
+            React.createElement("div", { className: "dash-row" },
+                React.createElement(MediaCard, { icon: "\uD83C\uDFC6", label: "Campe\u00F3n Liguilla", imgSrc: campeon && campeon.escudo, value: campeon ? campeon.nombre : "A\u00FAn no definido", onClick: () => verEquipo("Campe\u00F3n Liguilla", campeonTabla || campeon, "Campe\u00F3n de la Liguilla") }))),
+        React.createElement("div", null,
+            React.createElement("div", { className: "dash-section-title" },
+                React.createElement(Icon, { size: 16 }, "\u2B50"),
+                " Destacados"),
+            React.createElement("div", { className: "dash-row" },
+                React.createElement(MediaCard, { icon: "\u26BD", label: "M\u00E1x. goleador", imgSrc: goleador && goleador.foto, value: goleador ? goleador.nombre : "Sin datos", sub: goleador && `${goleador.goles} goles \u00B7 ${nombreEquipoDe(goleador)}`, onClick: () => verJugador("M\u00E1ximo goleador", goleador) })),
+            React.createElement("div", { className: "dash-row" },
+                React.createElement(MediaCard, { icon: "\uD83C\uDFAF", label: "M\u00E1x. asistidor", imgSrc: asistidor && asistidor.foto, value: asistidor ? asistidor.nombre : "Sin datos", sub: asistidor && `${asistidor.asistencias} asist. \u00B7 ${nombreEquipoDe(asistidor)}`, onClick: () => verJugador("M\u00E1ximo asistidor", asistidor) })),
+            React.createElement("div", { className: "dash-row" },
+                React.createElement(MediaCard, { icon: "\uD83D\uDD25", label: "Goles + Asistencias", imgSrc: gaLider && gaLider.foto, value: gaLider ? gaLider.nombre : "Sin datos", sub: gaLider && `${(gaLider.goles || 0) + (gaLider.asistencias || 0)} G+A (\u26BD${gaLider.goles || 0} \u00B7 \uD83C\uDD70\uFE0F${gaLider.asistencias || 0}) \u00B7 ${nombreEquipoDe(gaLider)}`, onClick: () => verJugador("Goles + Asistencias", gaLider) })),
+            React.createElement("div", { className: "dash-row" },
+                React.createElement(MediaCard, { icon: "\u2B50", label: "MVP (por Score)", imgSrc: mvpScore && mvpScore.foto, value: mvpScore ? mvpScore.nombre : "Sin datos", sub: mvpScore && `${avg(mvpScore.scores).toFixed(1)} \u00B7 ${nombreEquipoDe(mvpScore)}`, onClick: () => verJugador("MVP (por Score)", mvpScore) }))),
+        React.createElement("div", null,
+            React.createElement("div", { className: "dash-section-title" },
+                React.createElement(Icon, { size: 16 }, "\uD83E\uDDF0"),
+                " Extras"),
+            React.createElement("div", { className: "tabs-even" },
+                React.createElement("button", { onClick: () => setTab("calendario"), className: "dash-extra-btn" }, "\uD83D\uDCC5 Calendario"),
+                React.createElement("button", { onClick: () => setTab("partido"), className: "dash-extra-btn btn-olive" }, "\u2694\uFE0F Partidos"),
+                React.createElement("button", { onClick: () => setTab("tabla"), className: "dash-extra-btn" }, "\uD83D\uDCCA Tabla")))));
+}
+// ---------- Extras ----------
+function Extras({ onExport, onImport, onResetLiga, onResetTodo }) {
+    return (React.createElement("div", { className: "space-y-4" },
+        React.createElement("h2", { className: "text-lg font-black" }, "\uD83E\uDDF0 Extras"),
+        React.createElement("div", { className: "card2 p-4" },
+            React.createElement("div", { className: "font-bold mb-1 flex items-center gap-2" },
+                React.createElement(Icon, { size: 16 }, "\uD83D\uDCBE"),
+                " Copia de seguridad"),
+            React.createElement("p", { className: "text-xs text-zinc-500 mb-3" }, "Tus datos se guardan solos en este dispositivo. Para no perderlos si cambias de navegador o borras datos del sitio, guarda una copia de vez en cuando."),
+            React.createElement("div", { className: "flex flex-wrap gap-2" },
+                React.createElement("button", { onClick: onExport, className: "btn-olive text-xs px-3 py-2 rounded-lg font-semibold" }, "\u2B07\uFE0F Exportar copia (.json)"),
+                React.createElement("label", { className: "file-btn" },
+                    "\u2B06\uFE0F Importar copia",
+                    React.createElement("input", { type: "file", accept: "application/json", className: "hidden", onChange: onImport })))),
+        React.createElement("div", { className: "card2 p-4", style: { borderColor: "#fecaca" } },
+            React.createElement("div", { className: "font-bold mb-1 flex items-center gap-2 text-red-600" },
+                React.createElement(Icon, { size: 16 }, "\u26A0\uFE0F"),
+                " Zona de peligro"),
+            React.createElement("p", { className: "text-xs text-zinc-500 mb-3" }, "Estas acciones no se pueden deshacer. Hac\u00E9 una copia de seguridad antes si no est\u00E1s seguro."),
+            React.createElement("div", { className: "flex flex-wrap gap-2" },
+                React.createElement("button", { onClick: onResetLiga, className: "text-xs px-3 py-2 rounded-lg font-semibold", style: { background: "#fef3c7", color: "#92400e" } }, "\uD83D\uDDD1\uFE0F Reiniciar liga (borrar todos los partidos)"),
+                React.createElement("button", { onClick: onResetTodo, className: "text-xs px-3 py-2 rounded-lg font-semibold bg-red-50 text-red-600 hover:bg-red-100" }, "\u2620\uFE0F Borrar todo")))));
+}
+function StatCard({ label, value, sub }) {
+    return (React.createElement("div", { className: "card2 p-3" },
+        React.createElement("div", { className: "text-[11px] uppercase tracking-wide text-zinc-500 font-semibold" }, label),
+        React.createElement("div", { className: "text-xl font-black" }, value),
+        sub && React.createElement("div", { className: "text-xs text-[#8F9500] font-semibold" }, sub)));
+}
+// ---------- Equipos: lista ----------
+function EquiposLista({ teams, setTeams, players, onOpen }) {
+    const [nombre, setNombre] = useState("");
+    const addTeam = () => {
+        if (teams.length >= MAX_EQUIPOS)
+            return;
+        const t = nuevoEquipo(nombre.trim() || `Equipo ${teams.length + 1}`);
+        setTeams([...teams, t]);
+        setNombre("");
+    };
+    const moveTeam = (index, dir) => {
+        const target = index + dir;
+        if (target < 0 || target >= teams.length)
+            return;
+        const next = [...teams];
+        [next[index], next[target]] = [next[target], next[index]];
+        setTeams(next);
+    };
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "flex items-center justify-between" },
+            React.createElement("h2", { className: "text-lg font-black" }, "Equipos"),
+            React.createElement("span", { className: "chip-total" },
+                "Total: ",
+                teams.length,
+                "/",
+                MAX_EQUIPOS)),
+        React.createElement("div", { className: "flex gap-2" },
+            React.createElement("input", { className: "flex-1", placeholder: "Nombre del equipo", value: nombre, onChange: (e) => setNombre(e.target.value), onKeyDown: (e) => e.key === "Enter" && addTeam() }),
+            React.createElement("button", { onClick: addTeam, disabled: teams.length >= MAX_EQUIPOS, className: "btn-olive rounded-full px-5 font-semibold disabled:opacity-40" }, "A\u00F1adir")),
+        teams.length > 1 && React.createElement("div", { className: "text-xs text-zinc-500 px-1" }, "Usa \u2191/\u2193 para poner los equipos en el mismo orden que tienen en el juego. Ese orden se usa como criterio final de desempate cuando dos equipos quedan totalmente empatados en la tabla."),
+        React.createElement("div", { className: "card2" },
+            teams.map((t, i) => {
+                const n = players.filter((p) => p.equipoId === t.id).length;
+                const squadEq = players.filter((p) => p.equipoId === t.id);
+                return (React.createElement("div", { key: t.id, className: `w-full flex items-center gap-2 px-4 py-3 ${i < teams.length - 1 ? "row-line" : ""}` },
+                    React.createElement("div", { className: "flex flex-col gap-0.5" },
+                        React.createElement("button", { onClick: (e) => { e.stopPropagation(); moveTeam(i, -1); }, disabled: i === 0, className: "text-zinc-400 disabled:opacity-20 hover:text-zinc-700 leading-none", title: "Subir" }, "\u25B2"),
+                        React.createElement("button", { onClick: (e) => { e.stopPropagation(); moveTeam(i, 1); }, disabled: i === teams.length - 1, className: "text-zinc-400 disabled:opacity-20 hover:text-zinc-700 leading-none", title: "Bajar" }, "\u25BC")),
+                    React.createElement("button", { onClick: () => onOpen(t.id), className: "flex-1 flex items-center gap-3 text-left" },
+                        t.escudo ? React.createElement("img", { src: t.escudo, className: "w-11 h-11 rounded-lg object-cover" }) : React.createElement("div", { className: "avatar-ph w-11 h-11 rounded-lg" },
+                            React.createElement(Icon, { size: 18 }, "\uD83D\uDC55")),
+                        React.createElement("div", { className: "flex-1" },
+                            React.createElement("div", { className: "font-semibold" }, t.nombre),
+                            React.createElement("div", { className: "text-xs text-zinc-500" },
+                                n,
+                                " jugador",
+                                n === 1 ? "" : "es",
+                                " \u00B7 ",
+                                fmtMoney(t.presupuesto),
+                                n > 0 && React.createElement(React.Fragment, null,
+                                    " \u00B7 \u2B50 ",
+                                    avgValoracion(squadEq).toFixed(1)))),
+                        React.createElement(Icon, { size: 16, className: "text-[#B4BC00]" }, "\uD83D\uDC65"))));
+            }),
+            !teams.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, "A\u00FAn no hay equipos. A\u00F1ade el primero arriba."))));
+}
+// ---------- Equipos: detalle ----------
+function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack }) {
+    const team = teams.find((t) => t.id === teamId);
+    const [editandoEquipo, setEditandoEquipo] = useState(false);
+    const [nombreNuevo, setNombreNuevo] = useState("");
+    const [editPlayerId, setEditPlayerId] = useState(null);
+    const [mostrarFinanzas, setMostrarFinanzas] = useState(false);
+    if (!team)
+        return null;
+    const squad = players.filter((p) => p.equipoId === teamId).sort((a, b) => a.dorsal - b.dorsal);
+    const updateTeam = (patch) => setTeams(teams.map((t) => (t.id === teamId ? { ...t, ...patch } : t)));
+    const removeTeam = () => {
+        if (!confirm(`¿Eliminar "${team.nombre}"? Sus jugadores quedarán libres.`))
+            return;
+        setTeams(teams.filter((t) => t.id !== teamId));
+        setPlayers(players.map((p) => (p.equipoId === teamId ? { ...p, equipoId: null } : p)));
+        onBack();
+    };
+    const addPlayer = () => {
+        if (!nombreNuevo.trim())
+            return;
+        if (squad.length >= MAX_JUGADORES) {
+            alert("Este equipo ya tiene 32 jugadores.");
+            return;
+        }
+        const usados = new Set(squad.map((p) => p.dorsal));
+        let d = 1;
+        while ((usados.has(d) || DORSALES_COMODIN.includes(d)) && d <= 99)
+            d++;
+        const np = nuevoJugador(teamId, d);
+        np.nombre = nombreNuevo.trim();
+        setPlayers([...players, np]);
+        setNombreNuevo("");
+    };
+    const comodinesActuales = squad.filter(isComodin);
+    const addComodin = () => {
+        if (comodinesActuales.length >= DORSALES_COMODIN.length) {
+            alert("Este equipo ya tiene sus 2 comodines (dorsales 31 y 32).");
+            return;
+        }
+        if (squad.length >= MAX_JUGADORES) {
+            alert("Este equipo ya tiene 32 jugadores.");
+            return;
+        }
+        const usados = new Set(squad.map((p) => p.dorsal));
+        const dorsal = DORSALES_COMODIN.find((d) => !usados.has(d));
+        const np = nuevoJugador(teamId, dorsal);
+        np.nombre = `Comodín #${dorsal}`;
+        np.valoracion = GRL_COMODIN;
+        np.valorMercado = calcValorMercado(np);
+        setPlayers([...players, np]);
+    };
+    const editPlayer = players.find((p) => p.id === editPlayerId);
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("button", { onClick: onBack, className: "link-blue flex items-center gap-1 text-sm" }, "\u2039 Equipos"),
+        React.createElement("div", { className: "card2 p-4" },
+            React.createElement("div", { className: "flex items-start gap-3" },
+                React.createElement(FotoUpload, { value: team.escudo, onChange: (v) => updateTeam({ escudo: v }), size: 56, label: "Escudo" }),
+                React.createElement("div", { className: "flex-1" }, editandoEquipo ? (React.createElement("input", { className: "w-full font-semibold", value: team.nombre, onChange: (e) => updateTeam({ nombre: e.target.value }), placeholder: "Nombre del equipo" })) : (React.createElement(React.Fragment, null,
+                    React.createElement("div", { className: "text-xl font-black" }, team.nombre),
+                    React.createElement("div", { className: "text-xs text-zinc-500 flex items-center gap-2" },
+                        React.createElement("span", null,
+                            squad.length,
+                            "/",
+                            MAX_JUGADORES,
+                            " jugadores"),
+                        squad.length > 0 && React.createElement("span", { className: "font-semibold", style: { color: "#8F9500" } },
+                            "\u2B50 Valoraci\u00F3n general: ",
+                            avgValoracion(squad).toFixed(1)))))),
+                React.createElement("button", { onClick: () => setEditandoEquipo(!editandoEquipo), className: "p-2 rounded-lg bg-zinc-100 hover:bg-zinc-200" },
+                    React.createElement(Icon, { size: 15 }, editandoEquipo ? "✔️" : "✏️"))),
+            React.createElement("div", { className: "flex items-center justify-between mt-3 pt-3 border-t border-zinc-100" },
+                React.createElement("button", { onClick: () => setMostrarFinanzas(true), className: "flex items-center gap-1.5 text-sm font-semibold text-[#8F9500] hover:opacity-80" },
+                    React.createElement(Icon, { size: 15 }, "\uD83D\uDCB0"),
+                    " ",
+                    fmtMoney(team.presupuesto),
+                    React.createElement("span", { className: "text-[10px] font-bold px-2 py-0.5 rounded-full", style: { background: "#F4F7DE", color: "#8F9500" } }, "Finanzas del Club")),
+                React.createElement("button", { onClick: removeTeam, className: "text-xs text-red-500 flex items-center gap-1 hover:text-red-700" },
+                    React.createElement(Icon, { size: 13 }, "\uD83D\uDDD1\uFE0F"),
+                    " Eliminar equipo"))),
+        React.createElement("div", { className: "card2" },
+            React.createElement("div", { className: "section-header px-4 py-2.5 flex items-center justify-between" },
+                React.createElement("span", null, "Jugadores"),
+                React.createElement("span", { className: "opacity-90 font-semibold" },
+                    "Total: ",
+                    squad.length)),
+            React.createElement("div", { className: "p-3 flex gap-2 row-line" },
+                React.createElement("input", { className: "flex-1", placeholder: "Nombre del jugador", value: nombreNuevo, onChange: (e) => setNombreNuevo(e.target.value), onKeyDown: (e) => e.key === "Enter" && addPlayer() }),
+                React.createElement("button", { onClick: addPlayer, className: "btn-olive rounded-full px-5 font-semibold text-sm" }, "A\u00F1adir")),
+            React.createElement("div", { className: "px-3 pb-3 flex items-center justify-between gap-2" },
+                React.createElement("span", { className: "text-xs text-zinc-500" },
+                    "\uD83C\uDCCF Comodines (85 GRL, dorsales 31/32): ",
+                    comodinesActuales.length,
+                    "/2"),
+                React.createElement("button", { onClick: addComodin, disabled: comodinesActuales.length >= 2, className: "text-xs px-3 py-1.5 rounded-full font-semibold", style: { background: comodinesActuales.length >= 2 ? "#e4e4e7" : "#8F9500", color: comodinesActuales.length >= 2 ? "#a1a1aa" : "#fff" } }, "\uD83C\uDCCF A\u00F1adir comod\u00EDn")),
+            React.createElement("div", null,
+                squad.map((p) => (React.createElement("button", { key: p.id, onClick: () => setEditPlayerId(p.id), className: "w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-zinc-50 row-line" },
+                    p.foto ? React.createElement("img", { src: p.foto, className: "w-10 h-10 rounded-full object-cover" }) : React.createElement("div", { className: "avatar-ph w-10 h-10 rounded-full text-xs font-bold" }, p.dorsal),
+                    React.createElement("div", { className: "flex-1" },
+                        React.createElement("div", { className: "font-medium text-sm flex items-center gap-2" },
+                            p.nombre,
+                            " ",
+                            isComodin(p) && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full", style: { background: "#F4F7DE", color: "#8F9500" } }, "COMOD\u00CDN"),
+                            p.sancionJornadas > 0 && React.createElement(Icon, { size: 12 }, "\uD83D\uDEAB"),
+                            (p.jornadasLesionado || 0) > 0 && React.createElement(Icon, { size: 12, className: "text-red-500" }, "\uD83D\uDE91")),
+                        React.createElement("div", { className: "text-xs text-zinc-500" },
+                            "#",
+                            p.dorsal,
+                            " \u00B7 ",
+                            p.posicion,
+                            " \u00B7 GRL ",
+                            p.valoracion)),
+                    React.createElement("div", { className: "text-right text-xs text-zinc-500" },
+                        React.createElement("div", { className: "text-[#8F9500] font-semibold" }, fmtMoney(p.valorMercado)),
+                        React.createElement("div", null,
+                            "\u26BD",
+                            p.goles,
+                            " \uD83C\uDD70\uFE0F",
+                            p.asistencias,
+                            p.posicion === "PT" && ` \uD83E\uDDE4${p.golesRecibidos || 0}`))))),
+                !squad.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, "Este equipo no tiene jugadores. A\u00F1ade el primero arriba."))),
+        editPlayer && (React.createElement(PlayerSheet, { player: editPlayer, onClose: () => setEditPlayerId(null), onChange: (patch) => setPlayers(players.map((p) => { if (p.id !== editPlayer.id)
+                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); } })),
+        mostrarFinanzas && React.createElement(FinanzasClubSheet, { team: team, onClose: () => setMostrarFinanzas(false) })));
+}
+function PlayerSheet({ player: p, onClose, onChange, onRemove }) {
+    const scoreProm = avg(p.scores);
+    const comodin = isComodin(p);
+    return (React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex justify-between items-center mb-3" },
+                React.createElement("span", { className: "font-black text-lg" }, comodin ? "Editar comod\u00EDn \uD83C\uDCCF" : "Editar jugador"),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement("div", { className: "flex gap-3 mb-3" },
+                React.createElement(FotoUpload, { value: p.foto, onChange: (v) => onChange({ foto: v }), size: 80, label: "Foto" }),
+                React.createElement("div", { className: "flex-1 flex flex-col justify-center gap-1.5" },
+                    React.createElement("input", { className: "w-full font-semibold", value: p.nombre, onChange: (e) => onChange({ nombre: e.target.value }), placeholder: "Nombre" }),
+                    React.createElement("input", { className: "w-full text-sm", value: p.nombreDorsal || "", onChange: (e) => onChange({ nombreDorsal: e.target.value }), placeholder: "Nombre dorsal (opcional, ej. apellido)" }))),
+            React.createElement("div", { className: "grid grid-cols-2 gap-2 text-xs" },
+                React.createElement(Field, { label: "Dorsal" },
+                    React.createElement(NumberField, { disabled: comodin, value: p.dorsal, min: 1, max: 99, onCommit: (n) => onChange({ dorsal: n }) })),
+                React.createElement(Field, { label: "Posici\u00F3n" },
+                    React.createElement("select", { value: p.posicion, onChange: (e) => onChange({ posicion: e.target.value }) }, POSICIONES.map((pos) => React.createElement("option", { key: pos, value: pos }, pos)))),
+                React.createElement(Field, { label: "Valoraci\u00F3n (GRL 60-99)" },
+                    React.createElement(NumberField, { min: 60, max: 99, disabled: comodin, value: comodin ? GRL_COMODIN : p.valoracion, onCommit: (n) => onChange({ valoracion: n }) })),
+                React.createElement(Field, { label: "Score promedio" },
+                    React.createElement("input", { disabled: true, value: p.scores.length ? scoreProm.toFixed(1) : "—" })),
+                React.createElement(Field, { label: "Goles" },
+                    React.createElement(NumberField, { min: 0, value: p.goles, onCommit: (n) => onChange({ goles: n }) })),
+                React.createElement(Field, { label: "Asistencias" },
+                    React.createElement(NumberField, { min: 0, value: p.asistencias, onCommit: (n) => onChange({ asistencias: n }) })),
+                p.posicion === "PT" && React.createElement(Field, { label: "\uD83E\uDDE4 Goles recibidos" },
+                    React.createElement(NumberField, { min: 0, value: p.golesRecibidos || 0, onCommit: (n) => onChange({ golesRecibidos: n }) })),
+                React.createElement(Field, { label: "Partidos jugados" },
+                    React.createElement(NumberField, { min: 0, value: p.partidosJugados, onCommit: (n) => onChange({ partidosJugados: n }) })),
+                React.createElement(Field, { label: "Minutos jugados" },
+                    React.createElement(NumberField, { min: 0, value: p.minutosJugados, onCommit: (n) => onChange({ minutosJugados: n }) })),
+                React.createElement(Field, { label: "\uD83D\uDFE8 Amarillas" },
+                    React.createElement(NumberField, { min: 0, value: p.amarillas, onCommit: (n) => onChange({ amarillas: n }) })),
+                React.createElement(Field, { label: "\uD83D\uDFE5 Rojas" },
+                    React.createElement(NumberField, { min: 0, value: p.rojas, onCommit: (n) => onChange({ rojas: n }) })),
+                React.createElement(Field, { label: "\uD83C\uDFC5 MVPs" },
+                    React.createElement(NumberField, { min: 0, value: p.mvps || 0, onCommit: (n) => onChange({ mvps: n }) })),
+                React.createElement(Field, { label: "Jornadas de sanci\u00F3n" },
+                    React.createElement(NumberField, { min: 0, value: p.sancionJornadas, onCommit: (n) => onChange({ sancionJornadas: n }) })),
+                React.createElement(Field, { label: "\uD83D\uDE91 Jornadas lesionado" },
+                    React.createElement(NumberField, { min: 0, value: p.jornadasLesionado || 0, onCommit: (n) => onChange({ jornadasLesionado: n }) })),
+                React.createElement(Field, { label: "Valor de mercado" },
+                    React.createElement("input", { disabled: true, value: fmtMoney(calcValorMercado(p)) }))),
+            React.createElement("div", { className: "flex justify-between items-center mt-4 pt-3 border-t border-zinc-100" },
+                React.createElement("button", { onClick: onRemove, className: "flex items-center gap-1 text-xs px-3 py-2 rounded-lg bg-red-50 text-red-600 hover:bg-red-100" },
+                    React.createElement(Icon, { size: 13 }, "\uD83D\uDDD1\uFE0F"),
+                    " Quitar jugador"),
+                React.createElement("button", { onClick: onClose, className: "btn-olive flex items-center gap-1 text-sm px-4 py-2 rounded-lg font-semibold" },
+                    React.createElement(Icon, { size: 14 }, "\u2714\uFE0F"),
+                    " Guardar")))));
+}
+function Field({ label, children }) {
+    return React.createElement("label", { className: "flex flex-col gap-0.5" },
+        React.createElement("span", { className: "text-zinc-500 font-medium" }, label),
+        children);
+}
+// ---------- Finanzas del Club: desglose y libro diario de movimientos de presupuesto ----------
+// Tarjeta resumida: Presupuesto Inicial + Total Ingresos - Total Egresos = Saldo Actual, más una
+// barra visual con la proporción entre ingresos y egresos y una tabla desplegable con todo el historial.
+function FinanzasPanel({ team }) {
+    const [expandido, setExpandido] = useState(false);
+    const historial = team.historialCaja || [];
+    const totalIngresos = historial.filter((m) => m.tipo === "INGRESO").reduce((a, m) => a + m.monto, 0);
+    const totalEgresos = historial.filter((m) => m.tipo === "EGRESO").reduce((a, m) => a + m.monto, 0);
+    const movimientoTotal = totalIngresos + totalEgresos;
+    const pctIngresos = movimientoTotal > 0 ? Math.round((totalIngresos / movimientoTotal) * 100) : 50;
+    const cronologico = historial.slice().reverse();
+    return React.createElement("div", { className: "space-y-2" },
+        React.createElement("div", { className: "card2 p-4 space-y-3" },
+            React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2" },
+                React.createElement(StatMini, { label: "Presupuesto inicial", value: fmtMoney(team.presupuestoBase) }),
+                React.createElement(StatMini, { label: "Total ingresos", value: "+" + fmtMoney(totalIngresos) }),
+                React.createElement(StatMini, { label: "Total egresos", value: "\u2212" + fmtMoney(totalEgresos) }),
+                React.createElement(StatMini, { label: "Saldo actual", value: fmtMoney(team.presupuesto) })),
+            React.createElement("div", null,
+                React.createElement("div", { className: "flex justify-between text-[10px] text-zinc-400 font-bold uppercase mb-1" },
+                    React.createElement("span", null, "\uD83D\uDFE2 Ingresos"),
+                    React.createElement("span", null, "\uD83D\uDD34 Egresos")),
+                React.createElement("div", { style: { display: "flex", width: "100%", height: 10, borderRadius: 9999, overflow: "hidden", background: "#f4f4f5" } },
+                    React.createElement("div", { style: { width: `${pctIngresos}%`, background: "#8F9500" } }),
+                    React.createElement("div", { style: { width: `${100 - pctIngresos}%`, background: "#dc2626" } })))),
+        React.createElement("button", { type: "button", onClick: () => setExpandido(!expandido), className: "text-xs font-bold text-zinc-600 hover:text-zinc-800 px-1" }, expandido ? "\u25B2 Ocultar historial de movimientos" : `\u25BC Ver historial completo (${historial.length} movimiento${historial.length === 1 ? "" : "s"})`),
+        expandido && React.createElement("div", { className: "card2 overflow-x-auto" },
+            React.createElement("table", { className: "text-sm table-responsive w-full" },
+                React.createElement("thead", { className: "text-zinc-500 text-xs row-line" },
+                    React.createElement("tr", null,
+                        React.createElement("th", { className: "text-left pl-4" }, "Concepto"),
+                        React.createElement("th", null, "Jornada"),
+                        React.createElement("th", null, "Tipo"),
+                        React.createElement("th", null, "Monto"),
+                        React.createElement("th", { className: "pr-4" }, "Saldo"))),
+                React.createElement("tbody", null,
+                    cronologico.map((m) => React.createElement("tr", { key: m.id, className: "row-line" },
+                        React.createElement("td", { className: "py-2 pl-4", "data-label": "Concepto" }, m.concepto),
+                        React.createElement("td", { className: "text-center text-zinc-500", "data-label": "Jornada" }, m.jornada != null ? `J${m.jornada}` : "\u2014"),
+                        React.createElement("td", { className: "text-center", "data-label": "Tipo" }, m.tipo === "INGRESO" ? React.createElement("span", { style: { color: "#16a34a" } }, "\uD83D\uDFE2 Ingreso") : React.createElement("span", { style: { color: "#dc2626" } }, "\uD83D\uDD34 Egreso")),
+                        React.createElement("td", { className: "text-center font-semibold", "data-label": "Monto", style: { color: m.tipo === "INGRESO" ? "#16a34a" : "#dc2626" } }, (m.tipo === "INGRESO" ? "+" : "\u2212") + fmtMoney(m.monto)),
+                        React.createElement("td", { className: "text-center pr-4 font-semibold", "data-label": "Saldo" }, fmtMoney(m.saldoResultante)))),
+                    !cronologico.length && React.createElement("tr", null,
+                        React.createElement("td", { colSpan: 5, className: "text-center text-zinc-500 py-8" }, "Todav\u00EDa no hay movimientos registrados para este equipo.")))))); 
+}
+function FinanzasClubSheet({ team, onClose }) {
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", style: { maxWidth: 620 }, onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex items-center justify-between mb-3" },
+                React.createElement("span", { className: "font-black text-lg flex items-center gap-2" },
+                    React.createElement(Icon, { size: 18 }, "\uD83D\uDCB0"),
+                    "Finanzas del Club \u2014 ", team.nombre),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement(FinanzasPanel, { team: team })));
+}
+// ---------- Comparador de jugadores: cara a cara con las métricas principales ----------
+function ComparadorJugadoresModal({ players, teams, onClose }) {
+    const [idA, setIdA] = useState("");
+    const [idB, setIdB] = useState("");
+    const teamName = (id) => { const t = teams.find((t) => t.id === id); return t ? t.nombre : "\uD83C\uDD93 Agente Libre"; };
+    const pA = players.find((p) => p.id === idA);
+    const pB = players.find((p) => p.id === idB);
+    const opciones = players.slice().sort((a, b) => a.nombre.localeCompare(b.nombre));
+    const filas = [
+        { label: "Equipo", val: (p) => teamName(p.equipoId) },
+        { label: "Posici\u00F3n", val: (p) => p.posicion },
+        { label: "GRL / Media", val: (p) => valoracionEfectiva(p).toFixed(0) },
+        { label: "Valor de mercado", val: (p) => fmtMoney(p.valorMercado) },
+        { label: "\u26BD Goles", val: (p) => p.goles || 0 },
+        { label: "\uD83C\uDD70\uFE0F Asistencias", val: (p) => p.asistencias || 0 },
+        { label: "\uD83D\uDFE8 Amarillas", val: (p) => p.amarillas || 0 },
+        { label: "\uD83D\uDFE5 Rojas", val: (p) => p.rojas || 0 },
+        { label: "\u2B50 Promedio de score", val: (p) => p.scores && p.scores.length ? avg(p.scores).toFixed(1) : "\u2014" },
+        { label: "Partidos jugados", val: (p) => p.partidosJugados || 0 },
+    ];
+    const mejor = (f, va, vb) => {
+        if (!pA || !pB || va === "\u2014" || vb === "\u2014")
+            return null;
+        const na = Number(va), nb = Number(vb);
+        if (Number.isNaN(na) || Number.isNaN(nb) || na === nb)
+            return null;
+        return na > nb ? "A" : "B";
+    };
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", style: { maxWidth: 640 }, onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex items-center justify-between mb-3" },
+                React.createElement("span", { className: "font-black text-lg flex items-center gap-2" },
+                    React.createElement(Icon, { size: 18 }, "\u2696\uFE0F"),
+                    "Comparador de jugadores"),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement("div", { className: "grid grid-cols-2 gap-2 mb-3" },
+                React.createElement("select", { className: "w-full", value: idA, onChange: (e) => setIdA(e.target.value) },
+                    React.createElement("option", { value: "" }, "Jugador A\u2026"),
+                    opciones.map((p) => React.createElement("option", { key: p.id, value: p.id, disabled: p.id === idB }, `${p.nombre} \u2014 ${teamName(p.equipoId)}`))),
+                React.createElement("select", { className: "w-full", value: idB, onChange: (e) => setIdB(e.target.value) },
+                    React.createElement("option", { value: "" }, "Jugador B\u2026"),
+                    opciones.map((p) => React.createElement("option", { key: p.id, value: p.id, disabled: p.id === idA }, `${p.nombre} \u2014 ${teamName(p.equipoId)}`)))),
+            (pA || pB) ? React.createElement("div", { className: "card2 overflow-x-auto" },
+                React.createElement("table", { className: "text-sm table-responsive w-full" },
+                    React.createElement("thead", { className: "text-zinc-500 text-xs row-line" },
+                        React.createElement("tr", null,
+                            React.createElement("th", { className: "text-left pl-3 py-2" }, ""),
+                            React.createElement("th", { className: "text-center py-2" }, pA ? pA.nombre : "\u2014"),
+                            React.createElement("th", { className: "text-center py-2" }, pB ? pB.nombre : "\u2014"))),
+                    React.createElement("tbody", null,
+                        filas.map((f, i) => {
+                            const vA = pA ? f.val(pA) : "\u2014";
+                            const vB = pB ? f.val(pB) : "\u2014";
+                            const ganador = mejor(f, vA, vB);
+                            return React.createElement("tr", { key: i, className: "row-line" },
+                                React.createElement("td", { className: "pl-3 py-2 text-xs text-zinc-500 font-medium" }, f.label),
+                                React.createElement("td", { className: "text-center py-2 font-semibold", style: ganador === "A" ? { color: "#8F9500" } : undefined }, vA),
+                                React.createElement("td", { className: "text-center py-2 font-semibold", style: ganador === "B" ? { color: "#8F9500" } : undefined }, vB));
+                        })))) : React.createElement("div", { className: "text-center text-zinc-500 text-sm py-10" }, "Selecciona dos jugadores de cualquier equipo para compararlos.")));
+}
+// ---------- Jugadores: lista global con filtros de búsqueda ----------
+// Lista a todos los jugadores del torneo (de cualquier equipo, más los agentes libres) y permite acotarla
+// por nombre, posición, rango de GRL, rango de precio de mercado y si es agente libre o de un equipo puntual.
+function JugadoresView({ teams, players, setPlayers }) {
+    const [busqueda, setBusqueda] = useState("");
+    const [filtroPos, setFiltroPos] = useState("");
+    const [grlMin, setGrlMin] = useState("");
+    const [grlMax, setGrlMax] = useState("");
+    const [precioMin, setPrecioMin] = useState("");
+    const [precioMax, setPrecioMax] = useState("");
+    const [filtroEquipo, setFiltroEquipo] = useState("");
+    const [editPlayerId, setEditPlayerId] = useState(null);
+    const [comparando, setComparando] = useState(false);
+    const nombreEquipoDe = (p) => { var _a; return ((_a = teams.find((t) => t.id === p.equipoId)) === null || _a === void 0 ? void 0 : _a.nombre) || null; };
+    const hayFiltros = busqueda || filtroPos || grlMin !== "" || grlMax !== "" || precioMin !== "" || precioMax !== "" || filtroEquipo;
+    const limpiarFiltros = () => { setBusqueda(""); setFiltroPos(""); setGrlMin(""); setGrlMax(""); setPrecioMin(""); setPrecioMax(""); setFiltroEquipo(""); };
+    const filtrados = players.filter((p) => {
+        if (busqueda.trim() && !p.nombre.toLowerCase().includes(busqueda.trim().toLowerCase()))
+            return false;
+        if (filtroPos && p.posicion !== filtroPos)
+            return false;
+        if (grlMin !== "" && p.valoracion < Number(grlMin))
+            return false;
+        if (grlMax !== "" && p.valoracion > Number(grlMax))
+            return false;
+        if (precioMin !== "" && (p.valorMercado || 0) < Number(precioMin))
+            return false;
+        if (precioMax !== "" && (p.valorMercado || 0) > Number(precioMax))
+            return false;
+        if (filtroEquipo === "LIBRE" && p.equipoId)
+            return false;
+        if (filtroEquipo && filtroEquipo !== "LIBRE" && p.equipoId !== filtroEquipo)
+            return false;
+        return true;
+    }).sort((a, b) => b.valoracion - a.valoracion || a.nombre.localeCompare(b.nombre));
+    const editPlayer = players.find((p) => p.id === editPlayerId);
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "flex items-center justify-between" },
+            React.createElement("h2", { className: "text-lg font-black" }, "\uD83D\uDD0D Jugadores"),
+            React.createElement("div", { className: "flex items-center gap-2" },
+                React.createElement("button", { type: "button", onClick: () => setComparando(true), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: { background: "#8F9500", color: "#fff" } }, "\u2696\uFE0F Comparar jugadores"),
+                React.createElement("span", { className: "chip-total" },
+                    filtrados.length,
+                    "/",
+                    players.length))),
+        React.createElement("div", { className: "card2 p-3 space-y-2" },
+            React.createElement("input", { className: "w-full", placeholder: "Buscar por nombre\u2026", value: busqueda, onChange: (e) => setBusqueda(e.target.value) }),
+            React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs" },
+                React.createElement(Field, { label: "Posici\u00F3n" },
+                    React.createElement("select", { className: "w-full", value: filtroPos, onChange: (e) => setFiltroPos(e.target.value) },
+                        React.createElement("option", { value: "" }, "Todas"),
+                        POSICIONES.map((pos) => React.createElement("option", { key: pos, value: pos }, pos)))),
+                React.createElement(Field, { label: "Equipo / Agente Libre" },
+                    React.createElement("select", { className: "w-full", value: filtroEquipo, onChange: (e) => setFiltroEquipo(e.target.value) },
+                        React.createElement("option", { value: "" }, "Todos"),
+                        React.createElement("option", { value: "LIBRE" }, "\uD83C\uDD93 Agentes Libres"),
+                        teams.map((t) => React.createElement("option", { key: t.id, value: t.id }, t.nombre)))),
+                React.createElement(Field, { label: "GRL m\u00EDn." },
+                    React.createElement("input", { type: "number", min: 60, max: 99, className: "w-full", placeholder: "60", value: grlMin, onChange: (e) => setGrlMin(e.target.value) })),
+                React.createElement(Field, { label: "GRL m\u00E1x." },
+                    React.createElement("input", { type: "number", min: 60, max: 99, className: "w-full", placeholder: "99", value: grlMax, onChange: (e) => setGrlMax(e.target.value) })),
+                React.createElement(Field, { label: "Precio m\u00EDn." },
+                    React.createElement("input", { type: "number", min: 0, step: 1000, className: "w-full", placeholder: "$0", value: precioMin, onChange: (e) => setPrecioMin(e.target.value) })),
+                React.createElement(Field, { label: "Precio m\u00E1x." },
+                    React.createElement("input", { type: "number", min: 0, step: 1000, className: "w-full", placeholder: "Sin l\u00EDmite", value: precioMax, onChange: (e) => setPrecioMax(e.target.value) }))),
+            hayFiltros && React.createElement("button", { type: "button", onClick: limpiarFiltros, className: "text-[11px] font-bold text-zinc-500 hover:text-zinc-700" }, "\u2715 Limpiar filtros")),
+        React.createElement("div", { className: "card2" },
+            filtrados.map((p, i) => { const eq = nombreEquipoDe(p); return (React.createElement("button", { key: p.id, onClick: () => setEditPlayerId(p.id), className: `w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-zinc-50 ${i < filtrados.length - 1 ? "row-line" : ""}` },
+                p.foto ? React.createElement("img", { src: p.foto, className: "w-10 h-10 rounded-full object-cover" }) : React.createElement("div", { className: "avatar-ph w-10 h-10 rounded-full text-xs font-bold" }, p.dorsal),
+                React.createElement("div", { className: "flex-1 min-w-0" },
+                    React.createElement("div", { className: "font-medium text-sm flex items-center gap-2" },
+                        p.nombre,
+                        " ",
+                        isComodin(p) && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full", style: { background: "#F4F7DE", color: "#8F9500" } }, "COMOD\u00CDN"),
+                        p.sancionJornadas > 0 && React.createElement(Icon, { size: 12 }, "\uD83D\uDEAB"),
+                        (p.jornadasLesionado || 0) > 0 && React.createElement(Icon, { size: 12, className: "text-red-500" }, "\uD83D\uDE91")),
+                    React.createElement("div", { className: "text-xs text-zinc-500 truncate" },
+                        "#",
+                        p.dorsal,
+                        " \u00B7 ",
+                        p.posicion,
+                        " \u00B7 GRL ",
+                        p.valoracion,
+                        " \u00B7 ",
+                        eq ? eq : React.createElement("span", { className: "font-semibold", style: { color: "#8F9500" } }, "\uD83C\uDD93 Agente Libre"))),
+                React.createElement("div", { className: "text-right text-xs text-zinc-500 shrink-0" },
+                    React.createElement("div", { className: "text-[#8F9500] font-semibold" }, fmtMoney(p.valorMercado)),
+                    React.createElement("div", null,
+                        "\u26BD",
+                        p.goles,
+                        " \uD83C\uDD70\uFE0F",
+                        p.asistencias,
+                        p.posicion === "PT" && ` \uD83E\uDDE4${p.golesRecibidos || 0}`)))); }),
+            !filtrados.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, players.length ? "Ning\u00FAn jugador coincide con estos filtros." : "A\u00FAn no hay jugadores cargados.")),
+        editPlayer && (React.createElement(PlayerSheet, { player: editPlayer, onClose: () => setEditPlayerId(null), onChange: (patch) => setPlayers(players.map((p) => { if (p.id !== editPlayer.id)
+                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); } })),
+        comparando && React.createElement(ComparadorJugadoresModal, { players: players, teams: teams, onClose: () => setComparando(false) })));
+}
+// Input numérico "amigable": mientras escribís podés borrar o dejarlo vacío sin que salte a 0/mín/máx.
+// El valor solo se valida y se aplica (clamp incluido) al confirmar (blur o Enter).
+function NumberField({ value, onCommit, min, max, step, className, disabled }) {
+    const [local, setLocal] = useState(value == null ? "" : String(value));
+    useEffect(() => { setLocal(value == null ? "" : String(value)); }, [value]);
+    const commit = () => {
+        const txt = local.trim();
+        if (txt === "" || txt === "-") {
+            setLocal(value == null ? "" : String(value));
+            return;
+        }
+        let n = Number(txt);
+        if (Number.isNaN(n)) {
+            setLocal(value == null ? "" : String(value));
+            return;
+        }
+        if (min != null)
+            n = Math.max(min, n);
+        if (max != null)
+            n = Math.min(max, n);
+        setLocal(String(n));
+        if (n !== value)
+            onCommit(n);
+    };
+    return React.createElement("input", { type: "number", min: min, max: max, step: step, disabled: disabled, className: className, value: local,
+        onChange: (e) => setLocal(e.target.value),
+        onBlur: commit,
+        onKeyDown: (e) => { if (e.key === "Enter") { commit(); e.target.blur(); } } });
+}
+// Selector de minuto con tiempo de compensación (ej. 45+2', 90+4') para jugadas en el descuento.
+function MinutoField({ minuto, extra, onMinuto, onExtra }) {
+    return React.createElement("span", { className: "flex items-center gap-0.5" },
+        React.createElement(NumberField, { min: 1, max: 90, className: "w-12", value: minuto, onCommit: onMinuto }),
+        React.createElement("span", { className: "text-zinc-400 text-xs font-bold" }, "+"),
+        React.createElement(NumberField, { min: 0, max: 15, className: "w-10", value: extra, onCommit: onExtra }),
+        React.createElement("span", { className: "text-zinc-400 text-xs" }, "'"));
+}
+// ---------- Tabla general ----------
+// Flechita de cambio de posición respecto a la jornada anterior, al estilo PES17: verde hacia arriba,
+// roja hacia abajo, y un punto gris cuando no hubo cambio (o todavía no hay jornada anterior con qué comparar).
+function FlechaPosicion({ actual, anterior }) {
+    if (anterior == null || anterior === actual)
+        return React.createElement("span", { className: "inline-block w-2 h-2 rounded-full bg-zinc-300 shrink-0", title: "Sin cambios" });
+    if (anterior > actual)
+        return React.createElement("span", { className: "text-green-500 text-[10px] leading-none shrink-0", title: `Sub\u00F3 ${anterior - actual} posici\u00F3n(es)` }, "\u25B2");
+    return React.createElement("span", { className: "text-red-500 text-[10px] leading-none shrink-0", title: `Baj\u00F3 ${actual - anterior} posici\u00F3n(es)` }, "\u25BC");
+}
+// Fila de un partido dentro del calendario de un equipo (usado en la miniventana al tocar un equipo en la Tabla).
+function FilaCalendarioEquipo({ p, equipo, teams }) {
+    const rivalId = p.local === equipo.id ? p.visitante : p.local;
+    const rival = teams.find((t) => t.id === rivalId);
+    const esLocal = p.local === equipo.id;
+    const misGoles = esLocal ? p.golesLocal : p.golesVisitante;
+    const rivalGoles = esLocal ? p.golesVisitante : p.golesLocal;
+    const resultado = p.jugado ? (misGoles > rivalGoles ? "G" : misGoles < rivalGoles ? "P" : "E") : null;
+    const colorResultado = resultado === "G" ? "text-emerald-600" : resultado === "P" ? "text-red-500" : resultado === "E" ? "text-zinc-500" : "text-zinc-300";
+    return React.createElement("div", { className: "flex items-center gap-2 py-2 row-line" },
+        React.createElement("span", { className: "text-[10px] font-bold text-zinc-400 w-9 shrink-0" }, `J${p.jornadaNumero}`),
+        React.createElement("span", { className: "text-[10px] font-bold w-4 shrink-0 text-center text-zinc-400" }, esLocal ? "L" : "V"),
+        React.createElement(EscudoFila, { team: rival, size: 22 }),
+        React.createElement("span", { className: "text-sm flex-1 truncate" }, rival ? rival.nombre : "Por definir"),
+        React.createElement("span", { className: `text-sm font-black shrink-0 ${colorResultado}` }, p.jugado ? `${misGoles} - ${rivalGoles}` : "vs"),
+        p.fecha && React.createElement("span", { className: "text-[10px] text-zinc-400 shrink-0 hidden sm:inline" }, p.fecha));
+}
+// Miniventana con el calendario completo de un equipo (todos los partidos de la fase mostrada, jugados y pendientes).
+// Se abre al tocar un equipo en cualquiera de las tablas (Apertura / Clausura / General).
+function EquipoCalendarioSheet({ equipo, jornadas, teams, onClose }) {
+    if (!equipo)
+        return null;
+    const partidos = [];
+    (jornadas || []).forEach((j) => {
+        (j.partidos || []).forEach((p) => {
+            if (p.local === equipo.id || p.visitante === equipo.id) {
+                partidos.push({ ...p, jornadaNumero: j.numero });
+            }
+        });
+    });
+    partidos.sort((a, b) => (a.jornadaNumero || 0) - (b.jornadaNumero || 0));
+    const jugados = partidos.filter((p) => p.jugado);
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex justify-between items-center mb-1" },
+                React.createElement("div", { className: "flex items-center gap-2 min-w-0" },
+                    equipo.escudo ? React.createElement("img", { src: equipo.escudo, className: "w-8 h-8 rounded-full object-cover shrink-0" }) : null,
+                    React.createElement("span", { className: "font-black text-lg truncate" }, equipo.nombre)),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100 shrink-0" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement("div", { className: "text-xs text-zinc-500 mb-2" }, `${jugados.length} jugados de ${partidos.length} partidos`),
+            React.createElement("div", { className: "divide-y divide-zinc-100" }, partidos.map((p) => React.createElement(FilaCalendarioEquipo, { key: p.id, p: p, equipo: equipo, teams: teams }))),
+            !partidos.length && React.createElement("div", { className: "text-center text-zinc-500 py-6 text-sm" }, "Sin partidos programados en esta fase.")));
+}
+function TablaGeneral({ tabla, tablaAnterior, titulo, jornadas, teams }) {
+    const posAnteriorPorId = {};
+    (tablaAnterior || []).forEach((t, i) => (posAnteriorPorId[t.id] = i + 1));
+    const [equipoSel, setEquipoSel] = useState(null);
+    return (React.createElement("div", { className: "card2" },
+        equipoSel && React.createElement(EquipoCalendarioSheet, { equipo: equipoSel, jornadas: jornadas, teams: teams || [], onClose: () => setEquipoSel(null) }),
+        React.createElement("div", { className: "section-header px-4 py-2.5" }, titulo || "Tabla general"),
+        React.createElement("div", { className: "overflow-x-auto" },
+            React.createElement("table", { className: "text-sm" },
+                React.createElement("thead", { className: "text-zinc-500 text-xs row-line" },
+                    React.createElement("tr", null,
+                        React.createElement("th", null, "#"),
+                        React.createElement("th", { className: "text-left" }, "Equipo"),
+                        React.createElement("th", null, "PJ"),
+                        React.createElement("th", null, "PG"),
+                        React.createElement("th", null, "PE"),
+                        React.createElement("th", null, "PP"),
+                        React.createElement("th", null, "GF"),
+                        React.createElement("th", null, "GC"),
+                        React.createElement("th", null, "DG"),
+                        React.createElement("th", null, "PTS"))),
+                React.createElement("tbody", null,
+                    tabla.map((t, i) => (React.createElement("tr", { key: t.id, className: `row-line cursor-pointer hover:bg-zinc-50 ${i < 4 ? "bg-[#F4F7DE]" : ""}`, onClick: () => setEquipoSel(t) },
+                        React.createElement("td", { className: "text-center" }, i + 1),
+                        React.createElement("td", { className: "py-2 flex items-center gap-2" },
+                            React.createElement(FlechaPosicion, { actual: i + 1, anterior: posAnteriorPorId[t.id] }),
+                            t.escudo ? React.createElement("img", { src: t.escudo, className: "w-5 h-5 rounded object-cover" }) : null,
+                            t.nombre),
+                        React.createElement("td", { className: "text-center" }, t.pj),
+                        React.createElement("td", { className: "text-center" }, t.pg),
+                        React.createElement("td", { className: "text-center" }, t.pe),
+                        React.createElement("td", { className: "text-center" }, t.pp),
+                        React.createElement("td", { className: "text-center" }, t.gf),
+                        React.createElement("td", { className: "text-center" }, t.gc),
+                        React.createElement("td", { className: "text-center" }, t.dg),
+                        React.createElement("td", { className: "text-center font-black text-[#8F9500]" }, t.pts)))),
+                    !tabla.length && React.createElement("tr", null,
+                        React.createElement("td", { colSpan: 10, className: "text-center text-zinc-500 py-6" }, "A\u00F1ade equipos para ver la tabla.")))))));
+}
+// Envoltorio de la pestaña "Tabla": Apertura / Clausura / General / Liguilla.
+function TablaTabs({ teams, players, tablaApertura, tablaClausura, tablaGeneral, tablaAperturaAnterior, tablaClausuraAnterior, tablaGeneralAnterior, fases, setFases, setTab, setFaseActiva }) {
+    const [sub, setSub] = usePersistedState("tablaSub", "apertura");
+    const OPCIONES = [["apertura", "Apertura"], ["clausura", "Clausura"], ["general", "General"], ["liguilla", "\uD83C\uDFC6 Liguilla"]];
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "tabs-even" }, OPCIONES.map(([val, label]) => React.createElement("button", { key: val, type: "button", onClick: () => setSub(val), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: sub === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label))),
+        sub === "apertura" && React.createElement(TablaGeneral, { tabla: tablaApertura, tablaAnterior: tablaAperturaAnterior, titulo: "Tabla Apertura", jornadas: fases.apertura, teams: teams }),
+        sub === "clausura" && React.createElement(TablaGeneral, { tabla: tablaClausura, tablaAnterior: tablaClausuraAnterior, titulo: "Tabla Clausura", jornadas: fases.clausura, teams: teams }),
+        sub === "general" && React.createElement(TablaGeneral, { tabla: tablaGeneral, tablaAnterior: tablaGeneralAnterior, titulo: "Tabla General (Apertura + Clausura)", jornadas: [...fases.apertura, ...fases.clausura], teams: teams }),
+        sub === "liguilla" && React.createElement(LiguillaView, { teams, players, tablaApertura, tablaClausura, tablaGeneral, fases, setFases, setTab, setFaseActiva })));
+}
+function nombreEquipo(teams, id) {
+    const t = teams.find((t) => t.id === id);
+    return t ? t.nombre : "\u2014";
+}
+// Panel de la tanda de penales tiro a tiro: elegís el equipo que tira (según el turno), el jugador de su
+// plantilla y si convirtió o falló. Va mostrando la ronda (⚽/✖) de cada equipo y corta sola cuando la
+// serie queda definida, según las reglas reales (5 tiros y muerte súbita si sigue el empate).
+function TandaPenales({ teams, players, equipoA, equipoB, tiros, onChange }) {
+    const [jugadorSel, setJugadorSel] = useState("");
+    const [nombreLibre, setNombreLibre] = useState("");
+    const lista = tiros || [];
+    const nA = nombreEquipo(teams, equipoA), nB = nombreEquipo(teams, equipoB);
+    const resultado = resultadoTandaPenales(lista);
+    const turno = resultado.terminada ? null : turnoTandaPenales(lista);
+    const equipoTurnoId = turno === "A" ? equipoA : equipoB;
+    const plantilla = players.filter((p) => p.equipoId === equipoTurnoId).sort((a, b) => (a.dorsal || 99) - (b.dorsal || 99));
+    const agregarTiro = (gol) => {
+        const jugador = plantilla.find((p) => p.id === jugadorSel);
+        const jugadorNombre = jugador ? jugador.nombre : (nombreLibre.trim() || "Jugador");
+        onChange([...lista, { equipo: turno, jugadorId: jugador ? jugador.id : null, jugadorNombre, gol }]);
+        setJugadorSel("");
+        setNombreLibre("");
+    };
+    const deshacer = () => onChange(lista.slice(0, -1));
+    const filaEquipo = (letra, nombreEq) => {
+        const propios = lista.filter((t) => t.equipo === letra);
+        return React.createElement("div", { className: "flex-1 space-y-1 min-w-0" },
+            React.createElement("div", { className: "text-[11px] font-bold text-center truncate" }, nombreEq),
+            React.createElement("div", { className: "flex flex-wrap justify-center gap-1" },
+                propios.map((t, i) => React.createElement("div", { key: i, title: `${t.jugadorNombre} \u2014 ${t.gol ? "gol" : "fall\u00F3"}`, className: `w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${t.gol ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}` }, t.gol ? "\u26BD" : "\u2716")),
+                !propios.length && React.createElement("span", { className: "text-[10px] text-zinc-300" }, "\u2014")));
+    };
+    return React.createElement("div", { className: "space-y-2 pt-2 mt-1 border-t border-zinc-100" },
+        React.createElement("div", { className: "text-[11px] font-bold text-zinc-500 text-center" }, "\uD83E\uDD45 Tanda de penales"),
+        React.createElement("div", { className: "flex gap-3" }, filaEquipo("A", nA), filaEquipo("B", nB)),
+        React.createElement("div", { className: "text-center text-sm font-black" },
+            resultado.golesA, " - ", resultado.golesB,
+            resultado.terminada ? React.createElement("span", { className: "text-[#8F9500]" }, ` \u2014 gana ${resultado.ganador === "A" ? nA : nB}`) : null),
+        !resultado.terminada && React.createElement("div", { className: "flex flex-col items-center gap-1.5 pt-1" },
+            React.createElement("div", { className: "text-[11px] text-zinc-500" }, `Tira: ${turno === "A" ? nA : nB}`),
+            React.createElement("div", { className: "flex items-center gap-1.5 flex-wrap justify-center" },
+                plantilla.length > 0
+                    ? React.createElement("select", { value: jugadorSel, onChange: (e) => setJugadorSel(e.target.value), className: "text-[11px] border rounded-lg px-1.5 py-1 max-w-[140px]" },
+                        React.createElement("option", { value: "" }, "Jugador\u2026"),
+                        plantilla.map((p) => React.createElement("option", { key: p.id, value: p.id }, `${p.dorsal ? p.dorsal + " \u00B7 " : ""}${p.nombre}`)))
+                    : React.createElement("input", { type: "text", value: nombreLibre, onChange: (e) => setNombreLibre(e.target.value), placeholder: "Nombre del jugador", className: "text-[11px] border rounded-lg px-1.5 py-1 max-w-[140px]" }),
+                React.createElement("button", { type: "button", onClick: () => agregarTiro(true), className: "text-[11px] px-2 py-1 rounded-lg bg-green-100 text-green-700 hover:bg-green-200 font-semibold" }, "\u26BD Gol"),
+                React.createElement("button", { type: "button", onClick: () => agregarTiro(false), className: "text-[11px] px-2 py-1 rounded-lg bg-red-100 text-red-600 hover:bg-red-200 font-semibold" }, "\u2716 Fall\u00F3"))),
+        lista.length > 0 && React.createElement("button", { type: "button", onClick: deshacer, className: "text-[10px] text-zinc-400 underline block mx-auto" }, "\u21A9 Deshacer \u00FAltimo tiro"));
+}
+// Fila de una serie (ida + vuelta) de la Liguilla, con marcador global y la tanda de penales si hace falta.
+function FilaSerieLiguilla({ teams, players, serie, onTandaChange }) {
+    const { equipoA, equipoB, pIda, pVuelta, ganador } = serie;
+    const nA = nombreEquipo(teams, equipoA), nB = nombreEquipo(teams, equipoB);
+    const idaTxt = pIda.jugado ? `${pIda.golesLocal}-${pIda.golesVisitante}` : "\u2014";
+    const vueltaTxt = pVuelta && pVuelta.jugado ? `${pVuelta.golesLocal}-${pVuelta.golesVisitante}` : "\u2014";
+    const golesA = (pIda.jugado ? pIda.golesLocal : 0) + (pVuelta && pVuelta.jugado ? pVuelta.golesVisitante : 0);
+    const golesB = (pIda.jugado ? pIda.golesVisitante : 0) + (pVuelta && pVuelta.jugado ? pVuelta.golesLocal : 0);
+    const ambosJugados = pIda.jugado && pVuelta && pVuelta.jugado;
+    const golesVisitanteA = pVuelta && pVuelta.jugado ? pVuelta.golesVisitante : 0;
+    const golesVisitanteB = pIda.jugado ? pIda.golesVisitante : 0;
+    const globalEmpatado = ambosJugados && golesA === golesB;
+    const definidoPorVisitante = globalEmpatado && golesVisitanteA !== golesVisitanteB;
+    const huboPenales = ambosJugados && serieRequierePenales(pIda, pVuelta);
+    return React.createElement("div", { className: "card2 p-3 space-y-1.5" },
+        React.createElement("div", { className: "text-[10px] font-bold text-zinc-400" }, serie.serie),
+        React.createElement("div", { className: "flex items-center justify-between text-sm" },
+            React.createElement("span", { className: ganador === equipoA ? "font-black text-[#8F9500]" : "font-medium" }, nA),
+            React.createElement("span", { className: "text-xs text-zinc-400" }, `Ida ${idaTxt} \u00B7 Vuelta ${vueltaTxt}`),
+            React.createElement("span", { className: ganador === equipoB ? "font-black text-[#8F9500]" : "font-medium" }, nB)),
+        ambosJugados && React.createElement("div", { className: "text-center text-xs text-zinc-500" },
+            "Global: ", golesA, " - ", golesB, ganador ? ` \u2014 avanza ${nombreEquipo(teams, ganador)}` : ""),
+        globalEmpatado && React.createElement("div", { className: "text-center text-[11px] text-zinc-500" },
+            "Gol de visitante: ", golesVisitanteA, " - ", golesVisitanteB,
+            definidoPorVisitante ? ` \u2014 avanza ${nombreEquipo(teams, ganador)} por gol de visitante` : ""),
+        huboPenales && React.createElement(TandaPenales, { teams, players, equipoA, equipoB, tiros: pVuelta.tandaPenales, onChange: (nuevaTanda) => onTandaChange(pVuelta.id, nuevaTanda) }));
+}
+// Tarjeta de un cruce (serie ida+vuelta) dentro del bracket: escudo, nombre y marcador global de cada equipo,
+// remarcando al clasificado; y abajo el detalle Ida / Vuelta.
+function BracketMatch({ teams, s, esFinal }) {
+    const teamObj = (id) => teams.find((t) => t.id === id);
+    const nombre = (id) => nombreEquipo(teams, id);
+    const idaTxt = s.pIda.jugado ? `${s.pIda.golesLocal}-${s.pIda.golesVisitante}` : "\u2014";
+    const vueltaTxt = s.pVuelta && s.pVuelta.jugado ? `${s.pVuelta.golesLocal}-${s.pVuelta.golesVisitante}` : "\u2014";
+    const ambosJugados = s.pIda.jugado && s.pVuelta && s.pVuelta.jugado;
+    const golesA = (s.pIda.jugado ? s.pIda.golesLocal : 0) + (s.pVuelta && s.pVuelta.jugado ? s.pVuelta.golesVisitante : 0);
+    const golesB = (s.pIda.jugado ? s.pIda.golesVisitante : 0) + (s.pVuelta && s.pVuelta.jugado ? s.pVuelta.golesLocal : 0);
+    const Fila = (id, goles, esGanador) => React.createElement("div", { className: `bracket-team${esGanador ? " winner" : ""}` },
+        React.createElement(EscudoFila, { team: teamObj(id), size: 20 }),
+        React.createElement("span", { className: `bracket-team-name${esGanador ? " winner-name" : ""}` }, id ? nombre(id) : "Por definir"),
+        esGanador && esFinal && React.createElement("span", { title: "Campe\u00F3n" }, "\uD83C\uDFC6"),
+        React.createElement("span", { className: `bracket-score${esGanador ? " winner-name" : ""}` }, ambosJugados ? goles : "\u2014"));
+    return React.createElement("div", { className: `bracket-match${s.ganador ? " decided" : ""}` },
+        React.createElement("div", { className: "bracket-serie-label" }, s.serie),
+        Fila(s.equipoA, golesA, s.ganador === s.equipoA),
+        Fila(s.equipoB, golesB, s.ganador === s.equipoB),
+        React.createElement("div", { className: "bracket-global" }, `Ida ${idaTxt} \u00B7 Vuelta ${vueltaTxt}`));
+}
+// Bracket interactivo (diagrama de eliminaci\u00F3n directa) de la Liguilla: Cuartos de Final, Semifinales y
+// Gran Final en columnas, con scroll horizontal en pantallas chicas. Reutiliza la misma estructura de
+// "rondas" (series con pIda/pVuelta/ganador) que ya arma LiguillaView.
+function BracketLiguilla({ teams, rondas }) {
+    if (!rondas.length)
+        return React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay cruces generados.");
+    return React.createElement("div", { className: "bracket-wrap" }, rondas.map((r) => React.createElement("div", { key: r.nombreRonda, className: "bracket-col" },
+        React.createElement("div", { className: "bracket-round-title" }, r.nombreRonda),
+        React.createElement("div", { className: "bracket-matches" }, r.series.map((s, i) => React.createElement(BracketMatch, { key: i, teams, s, esFinal: r.nombreRonda === "Final" }))))));
+}
+function LiguillaView({ teams, players, tablaApertura, tablaClausura, tablaGeneral, fases, setFases, setTab, setFaseActiva }) {
+    const [vista, setVista] = usePersistedState("liguillaVista", "bracket");
+    const clasificados = calcularClasificadosLiguilla(tablaApertura, tablaClausura, tablaGeneral);
+    const cruces = clasificados.completo ? armarCruceCuartos(clasificados) : [];
+    const yaGenerada = fases.liguilla.length > 0;
+    const nombre = (id) => nombreEquipo(teams, id);
+    const generar = () => {
+        if (!clasificados.completo)
+            return;
+        if (yaGenerada && !confirm("Ya hay una Liguilla generada. Esto la reemplaza por una nueva según la tabla actual. ¿Continuar?"))
+            return;
+        const jornadasCuartos = generarRondaLiguilla(cruces.map((c) => ({ label: c.label, equipoA: c.equipoA, equipoB: c.equipoB })), "Cuartos de Final", 1);
+        setFases((f) => ({ ...f, liguilla: jornadasCuartos }));
+    };
+    const actualizar = () => setFases((f) => ({ ...f, liguilla: avanzarLiguilla(f.liguilla) }));
+    const setTandaPenales = (vueltaPartidoId, nuevaTanda) => {
+        setFases((f) => ({ ...f, liguilla: f.liguilla.map((j) => ({ ...j, partidos: j.partidos.map((p) => p.id === vueltaPartidoId ? { ...p, tandaPenales: nuevaTanda } : p) })) }));
+    };
+    const agruparRonda = (numIda, numVuelta, nombreRonda) => {
+        const ida = fases.liguilla.find((j) => j.numero === numIda);
+        const vuelta = fases.liguilla.find((j) => j.numero === numVuelta);
+        if (!ida)
+            return null;
+        const series = ida.partidos.map((pIda, i) => {
+            const pVuelta = vuelta ? vuelta.partidos[i] : null;
+            const ganador = pVuelta ? ganadorSerie(pIda, pVuelta) : null;
+            return { serie: pIda.serie, equipoA: pIda.local, equipoB: pIda.visitante, pIda, pVuelta, ganador };
+        });
+        return { nombreRonda, series };
+    };
+    const rondas = [agruparRonda(1, 2, "Cuartos de Final"), agruparRonda(3, 4, "Semifinal"), agruparRonda(5, 6, "Final")].filter(Boolean);
+    const finalRonda = rondas.find((r) => r.nombreRonda === "Final");
+    const campeon = finalRonda && finalRonda.series[0] && finalRonda.series[0].ganador;
+    return React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "card2 p-4" },
+            React.createElement("div", { className: "font-bold mb-2 text-[#8F9500]" }, "Clasificados a la Liguilla"),
+            !clasificados.completo && React.createElement("div", { className: "text-xs text-zinc-500" }, "Todav\u00EDa faltan resultados en Apertura o Clausura para definir los 8 clasificados."),
+            clasificados.huboSustitutos && React.createElement("div", { className: "text-xs text-amber-600 mb-2" }, "\u2139\uFE0F Hab\u00EDa un equipo repetido entre los clasificados directos de Apertura/Clausura \u2014 el cupo pas\u00F3 autom\u00E1ticamente al siguiente en la tabla general (marcado con \u2b50)."),
+            clasificados.completo && React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs" }, [...clasificados.parciales.map((p) => ({ label: p.label, id: p.id, sustituto: p.sustituto })), ...clasificados.generalClasificados.map((id, i) => ({ label: `${i + 1}\u00B0 Gral`, id, sustituto: false }))].map((c, i) => React.createElement("div", { key: i, className: "bg-zinc-50 rounded-lg p-2" },
+                React.createElement("div", { className: "text-[10px] text-zinc-400 font-bold" }, c.label + (c.sustituto ? " \u2b50" : "")),
+                React.createElement("div", { className: "font-semibold" }, nombre(c.id))))),
+            React.createElement("div", { className: "flex gap-2 mt-3" },
+                React.createElement("button", { type: "button", disabled: !clasificados.completo, onClick: generar, className: "btn-olive text-xs px-3 py-2 rounded-lg font-semibold disabled:opacity-40" }, yaGenerada ? "\uD83D\uDD01 Regenerar cuartos" : "\uD83C\uDFC6 Generar Liguilla"),
+                yaGenerada && React.createElement("button", { type: "button", onClick: actualizar, className: "text-xs px-3 py-2 rounded-lg font-semibold bg-zinc-100 hover:bg-zinc-200" }, "\u21BB Actualizar / avanzar ronda"),
+                yaGenerada && React.createElement("button", { type: "button", onClick: () => { setFaseActiva("liguilla"); setTab("calendario"); }, className: "text-xs px-3 py-2 rounded-lg font-semibold bg-zinc-100 hover:bg-zinc-200" }, "\uD83D\uDCC5 Ir al calendario de la Liguilla"))),
+        campeon && React.createElement("div", { className: "card2 p-4 text-center", style: { background: "#F4F7DE" } },
+            React.createElement("div", { className: "text-2xl" }, "\uD83C\uDFC6"),
+            React.createElement("div", { className: "font-black text-lg" }, nombre(campeon)),
+            React.createElement("div", { className: "text-xs text-zinc-500" }, "Campe\u00F3n del torneo")),
+        rondas.length > 0 && React.createElement("div", { className: "space-y-2" },
+            React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+                React.createElement("h3", { className: "text-sm font-black" }, "\uD83C\uDFC6 Llaves de la Liguilla"),
+                React.createElement("div", { className: "tabs-even", style: { maxWidth: 220 } }, [["bracket", "\uD83D\uDDC2\uFE0F Bracket"], ["lista", "\uD83D\uDCCB Lista"]].map(([val, label]) => React.createElement("button", { key: val, type: "button", onClick: () => setVista(val), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: vista === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label)))),
+            vista === "bracket" && React.createElement(BracketLiguilla, { teams, rondas }),
+            vista === "lista" && rondas.map((r) => React.createElement("div", { key: r.nombreRonda, className: "space-y-2" },
+                React.createElement("h4", { className: "text-sm font-black" }, r.nombreRonda),
+                React.createElement("div", { className: "grid md:grid-cols-2 gap-2" }, r.series.map((s, i) => React.createElement(FilaSerieLiguilla, { key: i, teams, players, serie: s, onTandaChange: setTandaPenales })))))));
+}
+// ---------- Calendario ----------
+// Escudo chico reutilizado en las filas de calendario (placeholder con inicial si no hay imagen).
+function EscudoFila({ team, size }) {
+    const s = size || 24;
+    return team && team.escudo
+        ? React.createElement("img", { src: team.escudo, className: "rounded object-cover shrink-0", style: { width: s, height: s } })
+        : React.createElement("div", { className: "rounded flex items-center justify-center font-black shrink-0", style: { width: s, height: s, fontSize: s * 0.42, background: "#f0f0ea", color: "#a1a1aa" } }, team ? team.nombre.slice(0, 1) : "?");
+}
+// Fila de partido al estilo "lista de resultados": fecha/estado arriba, dos líneas de equipo (escudo + nombre + marcador).
+// En modo lectura se ve como un fixture de Sofascore; al tocar el lápiz se abre el modo edición con los selects originales.
+function FilaPartidoCalendario({ p, idx, teams, setPartido, onReset }) {
+    const [editando, setEditando] = useState(false);
+    const localTeam = teams.find((t) => t.id === p.local);
+    const visTeam = teams.find((t) => t.id === p.visitante);
+    const listo = !!(p.local && p.visitante);
+    const ganaLocal = p.jugado && p.golesLocal > p.golesVisitante;
+    const ganaVis = p.jugado && p.golesVisitante > p.golesLocal;
+    const Linea = (team, goles, ganador) => React.createElement("div", { className: "flex items-center justify-between gap-2" },
+        React.createElement("div", { className: "flex items-center gap-2 min-w-0" },
+            React.createElement(EscudoFila, { team: team, size: 24 }),
+            React.createElement("span", { className: `text-sm truncate ${ganador ? "font-black" : "font-medium"}` }, team ? team.nombre : "Por definir")),
+        React.createElement("span", { className: `text-sm shrink-0 ${p.jugado ? (ganador ? "font-black text-[#8F9500]" : "font-bold text-zinc-500") : "text-zinc-300"}` }, p.jugado ? goles : "\u2014"));
+    if (editando || !listo) {
+        return React.createElement("div", { className: "card2 p-3 space-y-2" },
+            React.createElement("div", { className: "flex items-center gap-2 calendar-edit-row" },
+                React.createElement("select", { className: "flex-1", value: p.local || "", onChange: (e) => setPartido(p.id, "local", e.target.value) },
+                    React.createElement("option", { value: "" }, "Local\u2026"),
+                    teams.map((t) => React.createElement("option", { key: t.id, value: t.id, disabled: t.id === p.visitante }, t.nombre))),
+                React.createElement("span", { className: "text-zinc-400 text-xs" }, p.jugado ? React.createElement("span", { className: "font-black text-[#8F9500]" },
+                    p.golesLocal,
+                    "-",
+                    p.golesVisitante) : "vs"),
+                React.createElement("select", { className: "flex-1", value: p.visitante || "", onChange: (e) => setPartido(p.id, "visitante", e.target.value) },
+                    React.createElement("option", { value: "" }, "Visitante\u2026"),
+                    teams.map((t) => React.createElement("option", { key: t.id, value: t.id, disabled: t.id === p.local }, t.nombre)))),
+            React.createElement("input", { type: "text", placeholder: "Fecha / hora (opcional)", value: p.fecha || "", onChange: (e) => setPartido(p.id, "fecha", e.target.value), className: "w-full text-xs" }),
+            React.createElement("div", { className: "flex items-center justify-end gap-2" },
+                p.jugado && React.createElement(Icon, { size: 14, className: "text-emerald-600" }, "\u2714\uFE0F"),
+                p.jugado && React.createElement("button", { type: "button", onClick: onReset, className: "text-[11px] px-2 py-1 rounded-lg bg-red-50 text-red-600 hover:bg-red-100" }, "\u21BA Reiniciar"),
+                listo && React.createElement("button", { type: "button", onClick: () => setEditando(false), className: "text-[11px] px-2.5 py-1 rounded-lg font-semibold btn-olive" }, "Listo")));
+    }
+    return React.createElement("div", { className: "card2 overflow-hidden" },
+        React.createElement("div", { className: "flex items-center justify-between px-3 pt-2" },
+            React.createElement("span", { className: "text-[10px] font-bold text-zinc-400" }, p.fecha || `Partido ${idx + 1}`),
+            React.createElement("div", { className: "flex items-center gap-1.5" },
+                p.jugado && React.createElement("span", { className: "text-[10px] font-black text-emerald-600" }, "FT"),
+                React.createElement("button", { type: "button", onClick: () => setEditando(true), title: "Editar partido", className: "text-[11px] text-zinc-400 hover:text-zinc-600" }, "\u270F\uFE0F"),
+                p.jugado && React.createElement("button", { type: "button", onClick: onReset, title: "Reiniciar partido", className: "text-[11px] px-1.5 py-0.5 rounded bg-red-50 text-red-600 hover:bg-red-100" }, "\u21BA"))),
+        React.createElement("div", { className: "px-3 pb-2.5 pt-1 space-y-1" },
+            Linea(localTeam, p.golesLocal, ganaLocal),
+            Linea(visTeam, p.golesVisitante, ganaVis)));
+}
+function Calendario({ teams, jornadas, setJornadas, setTab, players, setPlayers, setTeams }) {
+    const [jn, setJn] = usePersistedState("calendarioJn", 1);
+    const [ordenJornada, setOrdenJornada] = usePersistedState("calendarioOrden", "score");
+    const jornada = jornadas.find((j) => j.numero === jn);
+    const setPartido = (partidoId, campo, valor) => {
+        setJornadas(jornadas.map((j) => j.numero !== jn ? j : { ...j, partidos: j.partidos.map((p) => p.id === partidoId ? { ...p, [campo]: valor || null } : p) }));
+    };
+    const handleReset = (p) => reiniciarPartido(p, jn, { players, setPlayers, teams, setTeams, jornadas, setJornadas });
+    const teamName = (id) => { const t = teams.find((t) => t.id === id); return t ? t.nombre : "\u2014"; };
+    const elegiblesJornadaMap = jugadoresElegiblesJornada(jornada);
+    const campoOrden = { score: "score", goles: "goles", asistencias: "asistencias" }[ordenJornada] || "score";
+    const rankingJornadaAll = players.filter((p) => elegiblesJornadaMap.has(p.id)).sort((a, b) => elegiblesJornadaMap.get(b.id)[campoOrden] - elegiblesJornadaMap.get(a.id)[campoOrden] || elegiblesJornadaMap.get(b.id).score - elegiblesJornadaMap.get(a.id).score);
+    const rankingJornada = rankingJornadaAll.slice(0, 15);
+    const colsJornada = (p) => { const st = elegiblesJornadaMap.get(p.id); return campoOrden === "score" ? st.score.toFixed(1) : st[campoOrden]; };
+    const extraJornada = (p) => { const st = elegiblesJornadaMap.get(p.id); const partes = [`\u2B50 ${st.score.toFixed(1)}`, `${st.goles}G`, `${st.asistencias}A`]; return partes.filter((_, i) => campoOrden !== ["score", "goles", "asistencias"][i]).join(" \u00B7 "); };
+    const OPCIONES_ORDEN = [["score", "Score"], ["goles", "Goles"], ["asistencias", "Asistencias"]];
+    const numeroMax = jornadas.length ? jornadas[jornadas.length - 1].numero : 1;
+    const etiquetaJornada = (j) => (j && j.nombre) || `Jornada ${j ? j.numero : jn}`;
+    if (!jornadas.length)
+        return React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay una Liguilla generada. And\u00E1 a la pesta\u00F1a Tabla \u2192 Liguilla para generarla cuando terminen Apertura y Clausura.");
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "card2 p-3 flex items-center justify-between flex-wrap gap-2" },
+            React.createElement("span", { className: "font-black" }, etiquetaJornada(jornada)),
+            React.createElement("div", { className: "flex items-center gap-2" },
+                React.createElement("button", { onClick: () => setJn(Math.max(1, jn - 1)), className: "px-2 py-1 rounded bg-zinc-100 hover:bg-zinc-200" }, "\u2190"),
+                React.createElement("select", { value: jn, onChange: (e) => setJn(+e.target.value) }, jornadas.map((j) => React.createElement("option", { key: j.numero, value: j.numero }, etiquetaJornada(j)))),
+                React.createElement("button", { onClick: () => setJn(Math.min(numeroMax, jn + 1)), className: "px-2 py-1 rounded bg-zinc-100 hover:bg-zinc-200" }, "\u2192"))),
+        React.createElement("div", { className: "grid md:grid-cols-2 gap-2" }, jornada === null || jornada === void 0 ? void 0 : jornada.partidos.map((p, idx) => React.createElement(FilaPartidoCalendario, { key: p.id, p: p, idx: idx, teams: teams, setPartido: setPartido, onReset: () => handleReset(p) }))),
+        React.createElement("button", { onClick: () => setTab("partido"), className: "btn-olive text-sm px-4 py-2 rounded-lg flex items-center gap-1 font-semibold w-fit" },
+            React.createElement(Icon, { size: 14 }, "\u2694\uFE0F"),
+            " Jugar un partido de esta jornada"),
+        React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2 mt-2" },
+            React.createElement("h3", { className: "text-sm font-black" },
+                "\u2B50 Ranking Jornada ",
+                jn),
+            React.createElement("div", { className: "flex gap-1" }, OPCIONES_ORDEN.map(([val, label]) => React.createElement("button", { key: val, type: "button", onClick: () => setOrdenJornada(val), className: "text-[10px] font-bold px-2.5 py-1 rounded-full", style: ordenJornada === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label)))),
+        !rankingJornadaAll.length && React.createElement("div", { className: "card2 p-4 text-center text-zinc-500 text-xs" }, "Todav\u00EDa no hay partidos jugados en esta jornada (con al menos 5 minutos por jugador)."),
+        rankingJornadaAll.length > 0 && React.createElement(TablaRanking, { titulo: `Jugadores de la jornada ${jn} \u2014 por ${OPCIONES_ORDEN.find(([v]) => v === ordenJornada)[1]}`, icon: "\uD83C\uDFC5", rows: rankingJornada, allRows: rankingJornadaAll, cols: colsJornada, teamName: teamName, extra: extraJornada })));
+}
+// ---------- Tarjeta de resultado (imagen PNG vía Canvas) ----------
+// Genera y permite descargar una tarjeta con escudos, marcador, goleadores y MVP de un partido jugado.
+function cargarImagenTarjeta(src) {
+    return new Promise((resolve) => {
+        if (!src) { resolve(null); return; }
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = src;
+    });
+}
+function dibujarEscudoTarjeta(ctx, img, nombre, cx, cy, r) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    if (img) {
+        const ratio = Math.max((r * 2) / img.width, (r * 2) / img.height);
+        const w = img.width * ratio, h = img.height * ratio;
+        ctx.fillStyle = "#1c1c20";
+        ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+        ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
+    } else {
+        ctx.fillStyle = "#2c2c30";
+        ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+        ctx.fillStyle = "#8F9500";
+        ctx.font = `900 ${Math.round(r * 1.1)}px -apple-system, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText((nombre || "?").slice(0, 1).toUpperCase(), cx, cy + r * 0.06);
+    }
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(255,255,255,.15)";
+    ctx.stroke();
+}
+function truncarTextoTarjeta(ctx, texto, maxWidth) {
+    if (ctx.measureText(texto).width <= maxWidth)
+        return texto;
+    let t = texto;
+    while (t.length > 1 && ctx.measureText(t + "…").width > maxWidth)
+        t = t.slice(0, -1);
+    return t + "…";
+}
+async function dibujarTarjetaPartido(canvas, { localTeam, visTeam, golesLocal, golesVisitante, golesFilaLocal, golesFilaVis, tarjFilaLocal, tarjFilaVis, subFilaLocal, subFilaVis, mvpNombre, mvpEquipoNombre, jornadaLabel, fecha }) {
+    const W = 1080;
+    const filasGoles = Math.max(golesFilaLocal.length, golesFilaVis.length);
+    const filasTarjetas = Math.max(tarjFilaLocal.length, tarjFilaVis.length);
+    const filasSubs = Math.max(subFilaLocal.length, subFilaVis.length);
+    const FILA_H = 46;
+    const seccionAlto = (filas) => filas > 0 ? 66 + filas * FILA_H + 14 : 0;
+    const HEADER_H = 118;
+    const TEAM_BLOCK_H = 250;
+    const SUBTITLE_H = 66;
+    const MVP_H = mvpNombre ? 176 : 0;
+    const FOOTER_H = 64;
+    const H = Math.max(760, HEADER_H + TEAM_BLOCK_H + SUBTITLE_H + seccionAlto(filasGoles) + seccionAlto(filasTarjetas) + seccionAlto(filasSubs) + MVP_H + FOOTER_H);
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, "#1c1d20");
+    grad.addColorStop(1, "#0b0c0e");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    // ---- Cabecera: liga/jornada a la izquierda, estado a la derecha ----
+    ctx.textBaseline = "alphabetic";
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#8F9500";
+    ctx.font = "900 24px -apple-system, sans-serif";
+    ctx.fillText("LIGA KONAMI", 60, 56);
+    const cabeceraIzqW = ctx.measureText("LIGA KONAMI").width;
+    ctx.fillStyle = "rgba(255,255,255,.45)";
+    ctx.font = "600 24px -apple-system, sans-serif";
+    const sub = [jornadaLabel, fecha].filter(Boolean).join(" · ");
+    if (sub)
+        ctx.fillText(" · " + sub, 60 + cabeceraIzqW, 56);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "rgba(255,255,255,.7)";
+    ctx.font = "700 22px -apple-system, sans-serif";
+    ctx.fillText("RESULTADO FINAL", W - 60, 56);
+    ctx.strokeStyle = "rgba(255,255,255,.12)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(60, HEADER_H - 20);
+    ctx.lineTo(W - 60, HEADER_H - 20);
+    ctx.stroke();
+    // ---- Escudos + marcador ----
+    const [imgLocal, imgVis] = await Promise.all([cargarImagenTarjeta(localTeam === null || localTeam === void 0 ? void 0 : localTeam.escudo), cargarImagenTarjeta(visTeam === null || visTeam === void 0 ? void 0 : visTeam.escudo)]);
+    const cy = HEADER_H + 110, r = 82;
+    dibujarEscudoTarjeta(ctx, imgLocal, localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre, 250, cy, r);
+    dibujarEscudoTarjeta(ctx, imgVis, visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre, W - 250, cy, r);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#fff";
+    ctx.font = "900 92px -apple-system, sans-serif";
+    ctx.fillText(`${golesLocal}`, W / 2 - 78, cy);
+    ctx.fillText(`${golesVisitante}`, W / 2 + 78, cy);
+    ctx.font = "600 48px -apple-system, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,.35)";
+    ctx.fillText("-", W / 2, cy);
+    ctx.textBaseline = "alphabetic";
+    ctx.font = "700 28px -apple-system, sans-serif";
+    ctx.fillStyle = "#F4F7DE";
+    ctx.fillText(truncarTextoTarjeta(ctx, (localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre) || "Local", 300), 250, cy + r + 44);
+    ctx.fillText(truncarTextoTarjeta(ctx, (visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre) || "Visitante", 300), W - 250, cy + r + 44);
+    // ---- Subtítulo centrado ----
+    let y = HEADER_H + TEAM_BLOCK_H;
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255,255,255,.5)";
+    ctx.font = "600 26px -apple-system, sans-serif";
+    ctx.fillText(jornadaLabel || "Resultado", W / 2, y);
+    if (fecha) {
+        y += 34;
+        ctx.font = "500 22px -apple-system, sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,.35)";
+        ctx.fillText(fecha, W / 2, y);
+    }
+    y = HEADER_H + TEAM_BLOCK_H + SUBTITLE_H;
+    const colLocalX = W / 2 - 56, colVisX = W / 2 + 56, colW = W / 2 - 130;
+    const dibujarSeccion = (titulo, filasLocal, filasVis, iconoFn) => {
+        const filas = Math.max(filasLocal.length, filasVis.length);
+        if (!filas)
+            return;
+        ctx.strokeStyle = "rgba(255,255,255,.1)";
+        ctx.beginPath();
+        ctx.moveTo(60, y);
+        ctx.lineTo(W - 60, y);
+        ctx.stroke();
+        y += 40;
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#8F9500";
+        ctx.font = "900 24px -apple-system, sans-serif";
+        ctx.fillText(titulo, W / 2, y);
+        y += 40;
+        ctx.font = "600 25px -apple-system, sans-serif";
+        for (let i = 0; i < filas; i++) {
+            const fl = filasLocal[i], fv = filasVis[i];
+            ctx.font = "22px -apple-system, sans-serif";
+            ctx.fillText(iconoFn(fl, fv), W / 2, y + 8);
+            ctx.font = "600 25px -apple-system, sans-serif";
+            if (fl) {
+                ctx.textAlign = "right";
+                ctx.fillStyle = "#fff";
+                ctx.fillText(truncarTextoTarjeta(ctx, fl.texto, colW), colLocalX, y);
+                ctx.font = "500 19px -apple-system, sans-serif";
+                ctx.fillStyle = "rgba(255,255,255,.4)";
+                ctx.fillText(fl.minutoStr, colLocalX, y + 24);
+            }
+            if (fv) {
+                ctx.textAlign = "left";
+                ctx.fillStyle = "#fff";
+                ctx.font = "600 25px -apple-system, sans-serif";
+                ctx.fillText(truncarTextoTarjeta(ctx, fv.texto, colW), colVisX, y);
+                ctx.font = "500 19px -apple-system, sans-serif";
+                ctx.fillStyle = "rgba(255,255,255,.4)";
+                ctx.fillText(fv.minutoStr, colVisX, y + 24);
+            }
+            y += FILA_H;
+        }
+        y += 14;
+    };
+    dibujarSeccion("\u26BD GOLES", golesFilaLocal, golesFilaVis, (fl, fv) => ((fl && fl.propia) || (fv && fv.propia)) ? "\u26BD\u21A9\uFE0F" : "\u26BD");
+    dibujarSeccion("\uD83C\uDFF7\uFE0F TARJETAS", tarjFilaLocal, tarjFilaVis, (fl, fv) => { const t = (fl || fv); return (t && t.roja) ? "\uD83D\uDFE5" : "\uD83D\uDFE8"; });
+    dibujarSeccion("\uD83D\uDD04 CAMBIOS", subFilaLocal, subFilaVis, () => "\uD83D\uDD04");
+    // ---- MVP ----
+    if (mvpNombre) {
+        y += 10;
+        ctx.strokeStyle = "rgba(255,255,255,.1)";
+        ctx.beginPath();
+        ctx.moveTo(60, y);
+        ctx.lineTo(W - 60, y);
+        ctx.stroke();
+        y += 56;
+        ctx.textAlign = "center";
+        ctx.font = "900 38px -apple-system, sans-serif";
+        ctx.fillStyle = "#F4F7DE";
+        ctx.fillText("\uD83C\uDFC5 MVP DEL PARTIDO", W / 2, y);
+        y += 46;
+        ctx.font = "700 32px -apple-system, sans-serif";
+        ctx.fillStyle = "#fff";
+        ctx.fillText(mvpNombre, W / 2, y);
+        if (mvpEquipoNombre) {
+            y += 32;
+            ctx.font = "500 22px -apple-system, sans-serif";
+            ctx.fillStyle = "rgba(255,255,255,.5)";
+            ctx.fillText(mvpEquipoNombre, W / 2, y);
+        }
+    }
+    ctx.textAlign = "center";
+    ctx.font = "500 20px -apple-system, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,.3)";
+    ctx.fillText("Liga KONAMI", W / 2, H - 26);
+}
+function TarjetaResultadoBoton({ partido, localTeam, visTeam, localSquad, visSquad, matchData, jornadaLabel }) {
+    const [open, setOpen] = useState(false);
+    const [listo, setListo] = useState(false);
+    const canvasRef = useRef(null);
+    useEffect(() => {
+        if (!open)
+            return;
+        setListo(false);
+        const squadCompleto = [...localSquad, ...visSquad];
+        const find = (id) => squadCompleto.find((p) => p.id === id);
+        const { eventos, tarjetas, subs, mvp } = matchData;
+        const porLado = (lista, lado) => (lista || []).filter((x) => x.equipo === lado).slice().sort((a, b) => (a.minuto + (a.extra || 0) / 100) - (b.minuto + (b.extra || 0) / 100));
+        const golesA = (lado) => porLado(eventos, lado).map((e) => { const j = find(e.jugador); return { texto: `${(j === null || j === void 0 ? void 0 : j.nombre) || "?"}`, minutoStr: fmtMinuto(e.minuto, e.extra || 0), propia: !!e.propia }; });
+        const tarjA = (lado) => tarjetas.filter((t) => { const j = find(t.jugador); if (!j) return false; const esLocal = j.equipoId === partido.local; return lado === "local" ? esLocal : !esLocal; }).slice().sort((a, b) => (a.minuto + (a.extra || 0) / 100) - (b.minuto + (b.extra || 0) / 100)).map((t) => { const j = find(t.jugador); return { texto: `${(j === null || j === void 0 ? void 0 : j.nombre) || "?"}`, minutoStr: fmtMinuto(t.minuto, t.extra || 0), roja: t.tipo === "roja" }; });
+        const subsA = (lado) => porLado(subs, lado).map((s) => { const je = find(s.entra), js = find(s.sale); return { texto: `${(je === null || je === void 0 ? void 0 : je.nombre) || "?"} \u21B9 ${(js === null || js === void 0 ? void 0 : js.nombre) || "?"}`, minutoStr: fmtMinuto(s.minuto, s.extra || 0) }; });
+        const jugadorMvp = mvp ? find(mvp) : null;
+        const equipoMvp = jugadorMvp ? (jugadorMvp.equipoId === partido.local ? localTeam : visTeam) : null;
+        dibujarTarjetaPartido(canvasRef.current, {
+            localTeam, visTeam,
+            golesLocal: partido.golesLocal, golesVisitante: partido.golesVisitante,
+            golesFilaLocal: golesA("local"), golesFilaVis: golesA("vis"),
+            tarjFilaLocal: tarjA("local"), tarjFilaVis: tarjA("vis"),
+            subFilaLocal: subsA("local"), subFilaVis: subsA("vis"),
+            mvpNombre: jugadorMvp ? jugadorMvp.nombre : null,
+            mvpEquipoNombre: equipoMvp ? equipoMvp.nombre : null,
+            jornadaLabel, fecha: partido.fecha || "",
+        }).then(() => setListo(true));
+    }, [open]);
+    const descargar = () => {
+        const canvas = canvasRef.current;
+        if (!canvas)
+            return;
+        const nombreArchivo = `KONAMI_${(localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre) || "local"}_vs_${(visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre) || "visitante"}.png`.replace(/\s+/g, "_");
+        const link = document.createElement("a");
+        link.download = nombreArchivo;
+        link.href = canvas.toDataURL("image/png");
+        link.click();
+    };
+    return React.createElement(React.Fragment, null,
+        React.createElement("button", { type: "button", onClick: () => setOpen(true), className: "w-full text-sm px-4 py-2.5 rounded-lg font-semibold bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center gap-2" },
+            React.createElement(Icon, { size: 15 }, "\uD83D\uDDBC\uFE0F"),
+            " Tarjeta de resultado (imagen)"),
+        open && React.createElement("div", { className: "export-overlay" },
+            React.createElement("div", { className: "export-noprint sticky top-0 export-bar flex items-center justify-between px-4 py-3 z-10" },
+                React.createElement("button", { onClick: () => setOpen(false), className: "text-white text-sm flex items-center gap-1" }, "\u2039 Cerrar"),
+                React.createElement("button", { onClick: descargar, disabled: !listo, className: "btn-olive text-sm px-4 py-2 rounded-lg font-semibold flex items-center gap-1.5 disabled:opacity-50" },
+                    React.createElement(Icon, { size: 14 }, "\u2B07\uFE0F"),
+                    " Descargar imagen")),
+            React.createElement("div", { className: "max-w-md mx-auto px-3 pb-10" },
+                React.createElement("canvas", { ref: canvasRef, style: { width: "100%", height: "auto", borderRadius: "12px", marginTop: "12px", display: "block" } }),
+                !listo && React.createElement("div", { className: "text-center text-zinc-500 text-sm py-6" }, "Generando tarjeta\u2026"))));
+}
+// ---------- Jugar partido ----------
+// Módulo H2H (cara a cara) que se muestra en la previa de un partido: historial completo entre ambos
+// clubes (Apertura + Clausura + Liguilla), con partidos jugados, victorias de cada uno, empates y goles.
+function HistorialH2H({ teams, jornadas, localTeam, visTeam, excludeId }) {
+    const h2h = useMemo(() => historialH2H(localTeam.id, visTeam.id, jornadas, excludeId), [localTeam.id, visTeam.id, jornadas, excludeId]);
+    return React.createElement("div", { className: "card2" },
+        React.createElement("div", { className: "section-header px-4 py-2.5 flex items-center gap-2" },
+            React.createElement(Icon, { size: 14 }, "\uD83C\uDD9A"),
+            " Historial H2H"),
+        React.createElement("div", { className: "p-4" }, h2h.totalPJ === 0
+            ? React.createElement("div", { className: "text-xs text-zinc-500 text-center" }, `Primer enfrentamiento entre ${localTeam.nombre} y ${visTeam.nombre}.`)
+            : React.createElement("div", { className: "space-y-3" },
+                React.createElement("div", { className: "text-center text-xs text-zinc-500" }, `${h2h.totalPJ} partido${h2h.totalPJ === 1 ? "" : "s"} jugado${h2h.totalPJ === 1 ? "" : "s"} entre ambos`),
+                React.createElement("div", { className: "grid grid-cols-3 gap-2 text-center" },
+                    React.createElement("div", null,
+                        React.createElement("div", { className: "text-lg font-black text-[#8F9500]" }, h2h.victoriasA),
+                        React.createElement("div", { className: "text-[10px] text-zinc-500 truncate" }, localTeam.nombre)),
+                    React.createElement("div", null,
+                        React.createElement("div", { className: "text-lg font-black text-zinc-400" }, h2h.empates),
+                        React.createElement("div", { className: "text-[10px] text-zinc-500" }, "Empates")),
+                    React.createElement("div", null,
+                        React.createElement("div", { className: "text-lg font-black text-[#8F9500]" }, h2h.victoriasB),
+                        React.createElement("div", { className: "text-[10px] text-zinc-500 truncate" }, visTeam.nombre))),
+                React.createElement("div", { className: "text-center text-xs text-zinc-500" },
+                    "Goles totales: ",
+                    React.createElement("b", { className: "text-zinc-700" }, h2h.golesA),
+                    " - ",
+                    React.createElement("b", { className: "text-zinc-700" }, h2h.golesB)))));
+}
+// Genera un párrafo narrativo breve (estilo periodístico) a partir del resultado de un partido recién
+// guardado, usando plantillas dinámicas según la diferencia de gol, con variantes elegidas al azar.
+function generarCronica({ localNombre, visNombre, golesLocal, golesVis, mvpNombre, jornadaLabel }) {
+    const rand = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    const marcador = `${golesLocal}-${golesVis}`;
+    const empate = golesLocal === golesVis;
+    const ganador = golesLocal > golesVis ? localNombre : visNombre;
+    const perdedor = golesLocal > golesVis ? visNombre : localNombre;
+    const diff = Math.abs(golesLocal - golesVis);
+    let apertura;
+    if (empate) {
+        apertura = rand([
+            `${localNombre} y ${visNombre} se repartieron los puntos en un ${marcador} sin goleadores de m\u00E1s`,
+            `Reparto de puntos: ${localNombre} ${marcador} ${visNombre}, en un partido parejo de principio a fin`,
+            `Igualdad total entre ${localNombre} y ${visNombre}, que empataron ${marcador} en un cruce muy disputado`,
+        ]);
+    }
+    else if (diff === 1) {
+        apertura = rand([
+            `En un duelo cerrado, ${ganador} vence ${marcador} a ${perdedor}`,
+            `${ganador} se qued\u00F3 con un partido ajustado, ganando ${marcador} ante ${perdedor}`,
+            `Triunfo m\u00EDnimo de ${ganador}, que super\u00F3 ${marcador} a ${perdedor} en un final de infarto`,
+        ]);
+    }
+    else if (diff === 2) {
+        apertura = rand([
+            `${ganador} se impuso con claridad ${marcador} sobre ${perdedor}`,
+            `Victoria s\u00F3lida de ${ganador}, que dobleg\u00F3 ${marcador} a ${perdedor}`,
+            `${ganador} mostr\u00F3 su jerarqu\u00EDa y gan\u00F3 ${marcador} a ${perdedor}`,
+        ]);
+    }
+    else {
+        apertura = rand([
+            `Goleada de ${ganador}, que aplast\u00F3 ${marcador} a ${perdedor}`,
+            `Noche para el olvido de ${perdedor}, goleado ${marcador} por ${ganador}`,
+            `Sin piedad: ${ganador} liquid\u00F3 el partido y venci\u00F3 ${marcador} a ${perdedor}`,
+        ]);
+    }
+    const mvpFrase = mvpNombre ? rand([
+        `, con una actuaci\u00F3n estelar de ${mvpNombre}`,
+        `, de la mano de un gran ${mvpNombre}, elegido MVP del partido`,
+        `, con ${mvpNombre} como la gran figura del encuentro`,
+    ]) : "";
+    const cierre = jornadaLabel ? ` (${jornadaLabel})` : "";
+    return `${apertura}${mvpFrase}${cierre}.`;
+}
+function JugarPartido({ teams, players, setPlayers, jornadas, setJornadas, setTeams, draft, setDraft, faseActiva, todasLasJornadas }) {
+    if (!jornadas.length)
+        return React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay una Liguilla generada. And\u00E1 a la pesta\u00F1a Tabla \u2192 Liguilla para generarla cuando terminen Apertura y Clausura.");
+    return JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas, setTeams, draft, setDraft, faseActiva, todasLasJornadas });
+}
+// Todo lo que se va cargando acá (jornada elegida, partido, alineaciones, goles, tarjetas, cambios, scores, MVP)
+// vive en el borrador persistente (draft/setDraft) que maneja TorneoApp, en vez de estado local del componente.
+// Así, si se cambia de pestaña/sección (o incluso se cierra y reabre la página) antes de tocar "Guardar partido",
+// nada de lo cargado se pierde: queda listo para retomar y confirmar después.
+function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas, setTeams, draft, setDraft, faseActiva, todasLasJornadas }) {
+    // Texto de la crónica flash generada al guardar el último partido, y estado del botón de copiado.
+    // Es estado local (no borrador persistente): es un resumen efímero del guardado que se acaba de hacer.
+    const [cronica, setCronica] = useState("");
+    const [cronicaCopiada, setCronicaCopiada] = useState(false);
+    const copiarCronica = () => {
+        if (!navigator.clipboard)
+            return;
+        navigator.clipboard.writeText(cronica).then(() => {
+            setCronicaCopiada(true);
+            setTimeout(() => setCronicaCopiada(false), 1500);
+        });
+    };
+    const patch = (campo, valor) => setDraft((d) => ({ ...d, [campo]: typeof valor === "function" ? valor(d[campo]) : valor }));
+    const jn = draft.jn;
+    const setJn = (v) => patch("jn", v);
+    const partidoId = draft.partidoId;
+    const setPartidoId = (v) => patch("partidoId", v);
+    const localLineup = draft.localLineup;
+    const setLocalLineup = (v) => patch("localLineup", v);
+    const visLineup = draft.visLineup;
+    const setVisLineup = (v) => patch("visLineup", v);
+    const eventos = draft.eventos;
+    const setEventos = (v) => patch("eventos", v);
+    const tarjetas = draft.tarjetas;
+    const setTarjetas = (v) => patch("tarjetas", v);
+    const subs = draft.subs;
+    const setSubs = (v) => patch("subs", v);
+    const scores = draft.scores;
+    const setScores = (v) => patch("scores", v);
+    const mvp = draft.mvp;
+    const setMvp = (v) => patch("mvp", v);
+    const lesiones = draft.lesiones || [];
+    const setLesiones = (v) => patch("lesiones", v);
+    const jornada = jornadas.find((j) => j.numero === jn);
+    const partidosDisponibles = (jornada === null || jornada === void 0 ? void 0 : jornada.partidos.filter((p) => p.local && p.visitante)) || [];
+    const partido = partidosDisponibles.find((p) => p.id === partidoId);
+    const localTeam = teams.find((t) => t.id === (partido === null || partido === void 0 ? void 0 : partido.local));
+    const visTeam = teams.find((t) => t.id === (partido === null || partido === void 0 ? void 0 : partido.visitante));
+    const localSquad = players.filter((p) => p.equipoId === (partido === null || partido === void 0 ? void 0 : partido.local));
+    const visSquad = players.filter((p) => p.equipoId === (partido === null || partido === void 0 ? void 0 : partido.visitante));
+    // Reconstruye una alineación editable a partir de los datos guardados: usa la formación/filas guardadas si existen,
+    // o (compatibilidad con partidos guardados antes de tener formaciones) redistribuye el XI plano en la formación por defecto.
+    const reconstruirLineup = (md, prefijo, squad) => {
+        const formacion = md[`${prefijo}Formacion`] || "4-3-3";
+        if (md[`${prefijo}Filas`]) {
+            return { formacion, pt: md[`${prefijo}PT`] || null, filas: md[`${prefijo}Filas`] };
+        }
+        const squadMap = new Map(squad.map((p) => [p.id, p]));
+        const dist = distribuirEnFormacion(md[`${prefijo}XI`] || [], squadMap, formacion);
+        return { formacion, pt: dist.PT, filas: dist.filas };
+    };
+    // Al elegir un partido distinto (acción real del usuario) cargamos sus datos si ya fue jugado, o arrancamos en
+    // blanco si no. Se compara contra un ref (inicializado con el valor ya restaurado del borrador) para NO pisar
+    // un borrador en curso solo por haber montado/remontado el componente al volver a esta pestaña.
+    const partidoIdPrevRef = useRef(partidoId);
+    useEffect(() => {
+        if (partidoIdPrevRef.current === partidoId)
+            return;
+        partidoIdPrevRef.current = partidoId;
+        if (partido && partido.jugado && partido.matchData) {
+            const md = partido.matchData;
+            setDraft((d) => ({
+                ...d,
+                localLineup: reconstruirLineup(md, "local", localSquad),
+                visLineup: reconstruirLineup(md, "vis", visSquad),
+                eventos: md.eventos || [],
+                tarjetas: md.tarjetas || [],
+                subs: md.subs || [],
+                scores: md.scores || {},
+                mvp: md.mvp || "",
+                lesiones: md.lesiones || [],
+            }));
+        }
+        else {
+            setDraft((d) => ({ ...d, localLineup: lineupVacio(), visLineup: lineupVacio(), eventos: [], tarjetas: [], subs: [], scores: {}, mvp: "", lesiones: [] }));
+        }
+    }, [partidoId]);
+    const localXI = [localLineup.pt, ...localLineup.filas.flat()].filter(Boolean);
+    const visXI = [visLineup.pt, ...visLineup.filas.flat()].filter(Boolean);
+    const golesLocal = eventos.filter((e) => e.equipo === "local").length;
+    const golesVis = eventos.filter((e) => e.equipo === "vis").length;
+    const localEnCancha = calcularEnCancha(localXI, subs, "local", tarjetas);
+    const visEnCancha = calcularEnCancha(visXI, subs, "vis", tarjetas);
+    const localSquadEnCancha = localSquad.filter((p) => localEnCancha.has(p.id));
+    const visSquadEnCancha = visSquad.filter((p) => visEnCancha.has(p.id));
+    const squadEnCancha = [...localSquadEnCancha, ...visSquadEnCancha];
+    const involucrados = () => { const ids = new Set([...localXI, ...visXI]); subs.forEach((s) => ids.add(s.entra)); return players.filter((p) => ids.has(p.id)); };
+    const minutosDe = (jugadorId, enXI) => {
+        if (!enXI) {
+            const s = subs.find((s) => s.entra === jugadorId);
+            return s ? 90 - s.minuto : 0;
+        }
+        const s = subs.find((s) => s.sale === jugadorId);
+        return s ? s.minuto : 90;
+    };
+    const esEdicion = !!(partido && partido.jugado);
+    const handleReiniciar = () => {
+        reiniciarPartido(partido, jn, { players, setPlayers, teams, setTeams, jornadas, setJornadas });
+        setPartidoId("");
+    };
+    const guardarPartido = () => {
+        if (!partido)
+            return;
+        if (localXI.length !== 11 || visXI.length !== 11) {
+            alert("Cada equipo necesita exactamente 11 titulares.");
+            return;
+        }
+        const sancionadoEnXi = [...localSquad, ...visSquad].find((p) => (localXI.includes(p.id) || visXI.includes(p.id)) && (p.sancionJornadas || 0) > 0);
+        if (sancionadoEnXi) {
+            alert(`${sancionadoEnXi.nombre} est\u00E1 sancionado (le quedan ${sancionadoEnXi.sancionJornadas} jornada(s)) y no puede ser titular. Quit\u00E1lo del XI.`);
+            return;
+        }
+        const lesionadoEnXi = [...localSquad, ...visSquad].find((p) => (localXI.includes(p.id) || visXI.includes(p.id)) && (p.jornadasLesionado || 0) > 0);
+        if (lesionadoEnXi) {
+            alert(`\uD83D\uDE91 ${lesionadoEnXi.nombre} est\u00E1 lesionado (le quedan ${lesionadoEnXi.jornadasLesionado} jornada(s) de baja) y no puede ser titular. Quit\u00E1lo del XI.`);
+            return;
+        }
+        let basePlayers = players;
+        let baseTeams = teams;
+        if (esEdicion && partido.matchData) {
+            // Antes de aplicar los nuevos datos, deshacemos los efectos de la versión anterior del partido.
+            basePlayers = revertirEfectosJugadores(players, partido.matchData);
+            baseTeams = revertirEfectosPresupuesto(teams, partido.local, partido.visitante, partido.golesLocal, partido.golesVisitante, jn);
+        }
+        const nuevoMatchData = { localXI, visXI, localFormacion: localLineup.formacion, localPT: localLineup.pt, localFilas: localLineup.filas, visFormacion: visLineup.formacion, visPT: visLineup.pt, visFilas: visLineup.filas, eventos, tarjetas, subs, scores, mvp, localSquadIds: localSquad.map((p) => p.id), visSquadIds: visSquad.map((p) => p.id), lesiones };
+        const nuevosPlayers = aplicarEfectosJugadores(basePlayers, nuevoMatchData);
+        let nuevosTeams = aplicarEfectosPresupuesto(baseTeams, partido.local, partido.visitante, golesLocal, golesVis, jn);
+        const partidosActualizados = jornada.partidos.map((p) => p.id !== partido.id ? p : { ...p, jugado: true, golesLocal, golesVisitante: golesVis, matchData: nuevoMatchData });
+        const jornadaActualizada = { ...jornada, partidos: partidosActualizados };
+        // Si esta jornada quedó completa recién ahora (y es una de las jornadas con plus económico
+        // en Apertura o Clausura), se reparte el bono según la posición en la tabla de esa fase.
+        let bonoDeEstaJornada = !!jornada.bonoAplicado;
+        if (!bonoDeEstaJornada && (faseActiva === "apertura" || faseActiva === "clausura") && JORNADAS_BONO.has(jn) && jornadaCompleta(jornadaActualizada)) {
+            const jornadasConEstaActualizada = jornadas.map((j) => j.numero === jn ? jornadaActualizada : j);
+            nuevosTeams = bonoJornadaEquipos(nuevosTeams, jornadasConEstaActualizada, jn, +1);
+            bonoDeEstaJornada = true;
+        }
+        setPlayers(nuevosPlayers);
+        setTeams(nuevosTeams);
+        setJornadas(jornadas.map((j) => j.numero !== jn ? j : { ...jornadaActualizada, bonoAplicado: bonoDeEstaJornada }));
+        const mvpPlayer = mvp ? players.find((p) => p.id === mvp) : null;
+        setCronica(generarCronica({
+            localNombre: localTeam.nombre,
+            visNombre: visTeam.nombre,
+            golesLocal,
+            golesVis,
+            mvpNombre: mvpPlayer ? mvpPlayer.nombre : "",
+            jornadaLabel: (jornada && jornada.nombre) || `Jornada ${jn}`,
+        }));
+        setCronicaCopiada(false);
+        alert(esEdicion ? `Cambios guardados: ${localTeam.nombre} ${golesLocal} - ${golesVis} ${visTeam.nombre}` : `Partido guardado: ${localTeam.nombre} ${golesLocal} - ${golesVis} ${visTeam.nombre}`);
+        setPartidoId("");
+    };
+    return (React.createElement("div", { className: "space-y-3" },
+        cronica && React.createElement("div", { className: "card2 cronica-card p-4 space-y-2.5" },
+            React.createElement("div", { className: "flex items-center justify-between gap-2" },
+                React.createElement("div", { className: "text-xs font-black text-[#8F9500] flex items-center gap-1.5" },
+                    React.createElement(Icon, { size: 14 }, "\uD83D\uDCF0"),
+                    " Cr\u00F3nica flash"),
+                React.createElement("button", { type: "button", onClick: () => setCronica(""), className: "text-zinc-400 hover:text-zinc-600 text-xs", title: "Cerrar" }, "\u2715")),
+            React.createElement("p", { className: "text-sm leading-snug" }, cronica),
+            React.createElement("button", { type: "button", onClick: copiarCronica, className: "text-xs px-3 py-1.5 rounded-lg font-semibold btn-olive w-fit" }, cronicaCopiada ? "\u2705 Copiado" : "\uD83D\uDCCB Copiar cr\u00F3nica")),
+        React.createElement(SelectorPartido, { jornadas, jn, setJn, partidosDisponibles, partidoId, setPartidoId, teams, faseActiva }),
+        !partido && React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Selecciona jornada y partido (debe tener equipos asignados en el calendario)."),
+        partido && localTeam && visTeam && React.createElement(HistorialH2H, { teams, jornadas: todasLasJornadas || jornadas, localTeam, visTeam, excludeId: partido.id }),
+        partido && (React.createElement(React.Fragment, null,
+            esEdicion && React.createElement("div", { className: "card2 p-3 flex flex-wrap items-center justify-between gap-2", style: { borderColor: "#fde68a", background: "#fffbeb" } },
+                React.createElement("span", { className: "text-xs text-amber-800 font-semibold flex items-center gap-1.5" },
+                    React.createElement(Icon, { size: 14 }, "\u270F\uFE0F"),
+                    " Este partido ya fue jugado \u2014 pod\u00E9s editar sus datos y guardar los cambios."),
+                React.createElement("button", { onClick: handleReiniciar, className: "text-xs px-3 py-1.5 rounded-lg font-semibold bg-red-50 text-red-600 hover:bg-red-100 shrink-0" }, "\u21BA Reiniciar partido")),
+            React.createElement("div", { className: "card2 p-4" },
+                React.createElement("div", { className: "section-header -mx-4 -mt-4 mb-3 px-4 py-2 text-center" }, "Marcador"),
+                React.createElement("div", { className: "flex items-center justify-center gap-4" },
+                    React.createElement("span", { className: "font-bold text-sm text-right flex-1" }, localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre),
+                    React.createElement("div", { className: "lcd text-3xl px-4 py-1" },
+                        golesLocal,
+                        " - ",
+                        golesVis),
+                    React.createElement("span", { className: "font-bold text-sm flex-1" }, visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre))),
+            React.createElement("div", { className: "grid md:grid-cols-2 gap-3" },
+                React.createElement(EquipoAlineacion, { nombre: localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre, squad: localSquad, team: localTeam, lineup: localLineup, setLineup: setLocalLineup }),
+                React.createElement(EquipoAlineacion, { nombre: visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre, squad: visSquad, team: visTeam, lineup: visLineup, setLineup: setVisLineup })),
+            React.createElement(EventosPanel, { squad: squadEnCancha, squadCompleto: [...localSquad, ...visSquad], eventos: eventos, setEventos: setEventos, localSquad: localSquadEnCancha }),
+            React.createElement(TarjetasPanel, { squad: squadEnCancha, squadCompleto: [...localSquad, ...visSquad], tarjetas: tarjetas, setTarjetas: setTarjetas, lesiones: lesiones, setLesiones: setLesiones }),
+            React.createElement(SustitucionesPanel, { localXI: localXI, visXI: visXI, localSquad: localSquad, visSquad: visSquad, localEnCancha: localEnCancha, visEnCancha: visEnCancha, subs: subs, setSubs: setSubs, lesiones: lesiones, setLesiones: setLesiones }),
+            (localXI.length === 11 || visXI.length === 11) && (React.createElement("div", { className: "card2 p-3" },
+                React.createElement("div", { className: "text-xs font-bold text-zinc-500 mb-1.5 flex items-center gap-1.5" },
+                    React.createElement(Icon, { size: 14 }, "\uD83C\uDFC5"),
+                    " MVP del partido"),
+                React.createElement("select", { className: "w-full", value: mvp, onChange: (e) => setMvp(e.target.value) },
+                    React.createElement("option", { value: "" }, "Sin seleccionar\u2026"),
+                    localSquad.filter((p) => involucrados().some((i) => i.id === p.id)).length > 0 && React.createElement("optgroup", { label: (localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre) || "Local" }, involucrados().filter((p) => p.equipoId === partido.local).map((p) => React.createElement("option", { key: p.id, value: p.id }, p.nombre))),
+                    React.createElement("optgroup", { label: (visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre) || "Visitante" }, involucrados().filter((p) => p.equipoId === partido.visitante).map((p) => React.createElement("option", { key: p.id, value: p.id }, p.nombre)))))),
+            (localXI.length === 11 || visXI.length === 11) && (React.createElement("div", { className: "card2" },
+                React.createElement("div", { className: "section-header px-4 py-2.5 flex items-center gap-2" },
+                    React.createElement(Icon, { size: 14 }, "\u2B50"),
+                    " Score por jugador (sugerido, editable)"),
+                React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs max-h-56 overflow-y-auto p-3" }, involucrados().map((pl) => {
+                    const enXI = localXI.includes(pl.id) || visXI.includes(pl.id);
+                    const min = minutosDe(pl.id, enXI);
+                    const golesP = eventos.filter((e) => e.jugador === pl.id && !e.propia).length;
+                    const asistP = eventos.filter((e) => e.asistencia === pl.id).length;
+                    const amarillaP = tarjetas.filter((t) => t.jugador === pl.id && t.tipo === "amarilla").length;
+                    const rojaP = tarjetas.filter((t) => t.jugador === pl.id && t.tipo === "roja").length;
+                    const suger = sugerirScore(golesP, asistP, amarillaP, rojaP, min);
+                    return (React.createElement("label", { key: pl.id, className: "flex items-center justify-between gap-1 bg-zinc-50 rounded-lg px-2 py-1.5 border border-zinc-100" },
+                        React.createElement("span", null,
+                            pl.nombre,
+                            " ",
+                            React.createElement("span", { className: "text-zinc-400" },
+                                "(",
+                                min,
+                                "')")),
+                        React.createElement(NumberField, { step: "0.1", min: 0, max: 10, className: "w-14", value: scores[pl.id] != null ? scores[pl.id] : suger, onCommit: (n) => setScores({ ...scores, [pl.id]: n }) })));
+                })))),
+            partido.jugado && React.createElement(TarjetaResultadoBoton, { partido, localTeam, visTeam, localSquad, visSquad, matchData: { eventos, tarjetas, subs, mvp }, jornadaLabel: (jornada === null || jornada === void 0 ? void 0 : jornada.nombre) || `Jornada ${jn}` }),
+            React.createElement("button", { onClick: guardarPartido, className: "w-full btn-olive py-3 rounded-xl font-bold flex items-center justify-center gap-2" },
+                React.createElement(Icon, { size: 16 }, "\uD83D\uDCBE"),
+                esEdicion ? " Guardar cambios" : " Guardar partido")))));
+}
+function SelectorPartido({ jornadas, jn, setJn, partidosDisponibles, partidoId, setPartidoId, teams, faseActiva }) {
+    const nombre = (id) => { var _a; return ((_a = teams.find((t) => t.id === id)) === null || _a === void 0 ? void 0 : _a.nombre) || "?"; };
+    const esBono = (j) => (faseActiva === "apertura" || faseActiva === "clausura") && JORNADAS_BONO.has(j.numero);
+    return (React.createElement("div", { className: "card2 p-3 space-y-2.5" },
+        React.createElement("div", { className: "flex items-center gap-2" },
+            React.createElement("span", { className: "text-xs font-bold text-zinc-500 shrink-0" }, "Jornada"),
+            React.createElement("select", { value: jn, onChange: (e) => { setJn(+e.target.value); setPartidoId(""); }, className: "flex-1" }, jornadas.map((j) => React.createElement("option", { key: j.numero, value: j.numero }, `${j.nombre || `Jornada ${j.numero}`}${esBono(j) ? " 🎁" : ""}`))),
+            esBono(jornadas.find((j) => j.numero === jn)) && React.createElement("span", { className: "text-[10px] font-bold text-[#8F9500] whitespace-nowrap", title: "Al completarse esta jornada se reparte un plus económico según la posición en la tabla." }, "\uD83C\uDF81 Bono")),
+        partidosDisponibles.length
+            ? React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-2" }, partidosDisponibles.map((p) => {
+                const selected = p.id === partidoId;
+                return React.createElement("button", { key: p.id, type: "button", onClick: () => setPartidoId(selected ? "" : p.id), className: `match-pick-btn${selected ? " selected" : ""}${p.jugado ? " played" : ""}` },
+                    React.createElement("span", { className: "match-pick-teams" },
+                        React.createElement("span", null, nombre(p.local)),
+                        React.createElement("span", { className: "match-pick-vs" }, "vs"),
+                        React.createElement("span", null, nombre(p.visitante))),
+                    React.createElement("span", { className: `match-pick-status ${p.jugado ? "jugado" : "pendiente"}` }, p.jugado ? "\u2705 Jugado" : "\u23F3 Pendiente"));
+            }))
+            : React.createElement("div", { className: "text-center text-zinc-500 text-sm py-6" }, "Esta jornada todav\u00EDa no tiene partidos con ambos equipos asignados.")));
+}
+// Editor de alineación por chips: se elige una formación (misma grilla que el XI de la Jornada) y
+// se van tocando jugadores de la plantilla y espacios de la cancha para armar el equipo, sin selects.
+// Flujo: tocar un jugador de la plantilla lo coloca en el primer espacio libre de su línea (o el primero libre si no hay);
+// tocar un espacio vacío lo "selecciona" (queda resaltado) para que el próximo jugador tocado vaya justo ahí, lo que
+// permite elegir la posición exacta de cada uno; tocar un espacio ocupado lo libera y devuelve al jugador a la plantilla.
+function EquipoAlineacion({ nombre, squad, team, lineup, setLineup }) {
+    const [slotSel, setSlotSel] = useState(null); // null | "PT" | { li, si }
+    const lineasRoles = (FORMACIONES_XI[lineup.formacion] || FORMACIONES_XI["4-3-3"]).lineas;
+    const xi = [lineup.pt, ...lineup.filas.flat()].filter(Boolean);
+    const buscar = (id) => squad.find((s) => s.id === id);
+    const ordenado = squad.slice().sort((a, b) => a.dorsal - b.dorsal);
+    const titulares = ordenado.filter((p) => xi.includes(p.id));
+    const banca = ordenado.filter((p) => !xi.includes(p.id));
+    const completo = xi.length >= 11;
+    const colocarEnSlot = (destino, jugadorId) => {
+        if (destino === "PT") {
+            setLineup({ ...lineup, pt: jugadorId });
+        }
+        else {
+            const filas = lineup.filas.map((fila, i) => i !== destino.li ? fila : fila.map((v, j) => j === destino.si ? jugadorId : v));
+            setLineup({ ...lineup, filas });
+        }
+    };
+    const primerLibre = (grupoDeseado) => {
+        for (let li = 0; li < lineasRoles.length; li++) {
+            for (let si = 0; si < lineasRoles[li].length; si++) {
+                if (!lineup.filas[li][si] && (!grupoDeseado || ROLE_GRUPO(lineasRoles[li][si]) === grupoDeseado))
+                    return { li, si };
+            }
+        }
+        return null;
+    };
+    const onBenchClick = (p) => {
+        if ((p.sancionJornadas || 0) > 0 || (p.jornadasLesionado || 0) > 0)
+            return;
+        if (slotSel) {
+            if (slotSel === "PT" && p.posicion !== "PT")
+                return;
+            colocarEnSlot(slotSel, p.id);
+            setSlotSel(null);
+            return;
+        }
+        if (p.posicion === "PT") {
+            if (!lineup.pt)
+                colocarEnSlot("PT", p.id);
+            return;
+        }
+        if (completo)
+            return;
+        const libre = primerLibre(POSICION_GRUPO(p.posicion)) || primerLibre(null);
+        if (libre)
+            colocarEnSlot(libre, p.id);
+    };
+    const onSlotClick = (destino, ocupadoId) => {
+        if (ocupadoId) {
+            colocarEnSlot(destino, null);
+            if (slotSel && ((slotSel === "PT" && destino === "PT") || (slotSel !== "PT" && destino !== "PT" && slotSel.li === destino.li && slotSel.si === destino.si)))
+                setSlotSel(null);
+            return;
+        }
+        const mismo = slotSel && ((slotSel === "PT" && destino === "PT") || (slotSel !== "PT" && destino !== "PT" && slotSel.li === destino.li && slotSel.si === destino.si));
+        setSlotSel(mismo ? null : destino);
+    };
+    const chipStyle = (activo) => ({ background: "none", border: activo ? "2px dashed #B4BC00" : "2px solid transparent", borderRadius: "12px", cursor: "pointer", padding: "2px", minWidth: 0 });
+    const renderSlot = (li, si, id, role) => {
+        const activo = slotSel && slotSel !== "PT" && slotSel.li === li && slotSel.si === si;
+        const p = id ? buscar(id) : null;
+        return React.createElement("button", { key: `${li}-${si}`, type: "button", onClick: () => onSlotClick({ li, si }, id), style: chipStyle(activo) },
+            React.createElement(JugadorPitchVisual, { jugador: p, team: team, score: null, placeholder: role, role: p ? p.posicion : role }));
+    };
+    const renderPT = () => {
+        const activo = slotSel === "PT";
+        const p = lineup.pt ? buscar(lineup.pt) : null;
+        return React.createElement("button", { type: "button", onClick: () => onSlotClick("PT", lineup.pt), style: chipStyle(activo) },
+            React.createElement(JugadorPitchVisual, { jugador: p, team: team, score: null, placeholder: "PT", role: p ? p.posicion : "PT" }));
+    };
+    const cambiarFormacion = (nombreFormacion) => {
+        const plano = lineup.filas.flat().filter(Boolean);
+        const nuevasLineas = FORMACIONES_XI[nombreFormacion].lineas;
+        let cursor = 0;
+        const nuevasFilas = nuevasLineas.map((roles) => roles.map(() => plano[cursor++] || null));
+        setLineup({ ...lineup, formacion: nombreFormacion, filas: nuevasFilas });
+        setSlotSel(null);
+    };
+    return (React.createElement("div", { className: "card2" },
+        React.createElement("div", { className: "section-header px-4 py-2.5 flex justify-between items-center" },
+            React.createElement("span", { className: "flex items-center gap-2" },
+                team && team.escudo ? React.createElement("img", { src: team.escudo, className: "w-5 h-5 rounded object-cover" }) : null,
+                nombre),
+            React.createElement("span", { className: "flex items-center gap-2" },
+                xi.length,
+                "/11 ",
+                completo ? "✅" : "")),
+        React.createElement("div", { className: "px-4 pt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-500 font-semibold" },
+            React.createElement("span", { className: "flex items-center gap-2" },
+                "⭐ Plantilla: ",
+                avgValoracion(squad).toFixed(1),
+                titulares.length > 0 && React.createElement("span", { className: "px-1.5 py-0.5 rounded font-black", style: { background: "#F4F7DE", color: "#8F9500", border: "1px solid #B4BC00" } }, avgValoracion(titulares).toFixed(2))),
+            React.createElement("select", { value: lineup.formacion, onChange: (e) => cambiarFormacion(e.target.value), className: "text-[11px]" }, Object.keys(FORMACIONES_XI).map((f) => React.createElement("option", { key: f, value: f }, f)))),
+        React.createElement("div", { className: "p-3" },
+            React.createElement("div", { className: "text-[10px] text-zinc-400 text-center mb-1.5" }, slotSel ? "Toc\u00E1 un jugador de la plantilla para ubicarlo ah\u00ED \u2014 o toc\u00E1 el espacio de nuevo para cancelar." : "Toc\u00E1 un espacio vac\u00EDo para elegir d\u00F3nde ubicar al pr\u00F3ximo jugador."),
+            React.createElement(FormacionField, { lineasRoles: lineasRoles, filas: lineup.filas, renderSlot: renderSlot, renderPT: renderPT }),
+            React.createElement("div", { className: "text-[10px] uppercase tracking-wide text-zinc-400 font-bold mt-3 mb-1" },
+                "Plantilla",
+                completo ? " (XI completo)" : ""),
+            React.createElement("div", { className: "flex flex-wrap gap-1 max-h-40 overflow-y-auto" },
+                banca.map((p) => {
+                    const sancionado = (p.sancionJornadas || 0) > 0;
+                    const lesionado = (p.jornadasLesionado || 0) > 0;
+                    const bloqueado = (completo && !slotSel) || sancionado || lesionado || (slotSel === "PT" && p.posicion !== "PT");
+                    const etiqueta = sancionado ? `Sancionado \u2014 le quedan ${p.sancionJornadas} jornada(s)` : lesionado ? `\uD83D\uDE91 Lesionado \u2014 le quedan ${p.jornadasLesionado} jornada(s)` : undefined;
+                    return React.createElement("button", { key: p.id, type: "button", disabled: bloqueado, title: etiqueta, onClick: () => onBenchClick(p), className: "text-xs px-2 py-1 rounded-full font-medium", style: { background: (sancionado || lesionado) ? "#fef2f2" : bloqueado ? "#f4f4f5" : "#fff", color: (sancionado || lesionado) ? "#dc2626" : bloqueado ? "#a1a1aa" : "#3f3f46", border: (sancionado || lesionado) ? "1px solid #fecaca" : "1px solid #e3e3dc", cursor: bloqueado ? "not-allowed" : "pointer" } },
+                        sancionado ? "\uD83D\uDEAB " : "",
+                        lesionado ? "\uD83D\uDE91 " : "",
+                        "#",
+                        p.dorsal,
+                        " ",
+                        p.nombre,
+                        " ",
+                        React.createElement("span", { className: (sancionado || lesionado) ? "" : "text-zinc-400" }, sancionado ? `(sanc. ${p.sancionJornadas})` : lesionado ? `(les. ${p.jornadasLesionado})` : `(${p.posicion})`));
+                })),
+                !squad.length && React.createElement("div", { className: "text-xs text-zinc-500 p-1" }, "Este equipo no tiene jugadores."))));
+}
+// Etiquetas rápidas y opcionales para describir cómo fue el gol (se guardan en el historial del partido).
+const ETIQUETAS_GOL = ["Cabeza", "Penalti", "Tiro Libre", "Jugada"];
+function EventosPanel({ squad, squadCompleto, eventos, setEventos, localSquad }) {
+    const [jugador, setJugador] = useState("");
+    const [asistencia, setAsistencia] = useState("");
+    const [minuto, setMinuto] = useState(1);
+    const [extra, setExtra] = useState(0);
+    const [propia, setPropia] = useState(false);
+    const [etiqueta, setEtiqueta] = useState(null);
+    const [editId, setEditId] = useState(null);
+    const limpiar = () => { setJugador(""); setAsistencia(""); setMinuto(1); setExtra(0); setPropia(false); setEtiqueta(null); setEditId(null); };
+    const editar = (e) => {
+        setEditId(e.id);
+        setJugador(e.jugador || "");
+        setAsistencia(e.asistencia || "");
+        setMinuto(e.minuto || 1);
+        setExtra(e.extra || 0);
+        setPropia(!!e.propia);
+        setEtiqueta(e.etiqueta || null);
+    };
+    const add = () => {
+        if (!jugador)
+            return;
+        const esLocalJugador = !!localSquad.find((p) => p.id === jugador);
+        // Un gol en propia se acredita al equipo contrario al del jugador que lo comete.
+        const equipo = propia ? (esLocalJugador ? "vis" : "local") : (esLocalJugador ? "local" : "vis");
+        if (editId) {
+            setEventos(eventos.map((x) => x.id !== editId ? x : { ...x, equipo, jugador, asistencia: propia ? null : (asistencia || null), minuto, extra, propia, etiqueta: etiqueta || null }));
+        }
+        else {
+            setEventos([...eventos, { id: uid("gol"), equipo, jugador, asistencia: propia ? null : (asistencia || null), minuto, extra, propia, etiqueta: etiqueta || null }]);
+        }
+        limpiar();
+    };
+    return (React.createElement("div", { className: "card2" },
+        React.createElement("div", { className: "section-header px-4 py-2.5" }, "\u26BD Goles y asistencias"),
+        editId && React.createElement("div", { className: "mx-3 mt-3 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-between", style: { background: "#fffbeb", color: "#92400e" } },
+            "\u270F\uFE0F Editando gol existente",
+            React.createElement("button", { type: "button", onClick: limpiar, className: "text-amber-700 hover:text-amber-900" }, "Cancelar")),
+        React.createElement("div", { className: "px-3 pt-3" },
+            React.createElement("label", { className: "flex items-center gap-1.5 text-xs font-semibold text-zinc-600 cursor-pointer w-fit" },
+                React.createElement("input", { type: "checkbox", checked: propia, onChange: (e) => { setPropia(e.target.checked); setAsistencia(""); } }),
+                "\u26BD\u21A9\uFE0F Gol en propia")),
+        React.createElement("div", { className: "px-3 pt-2 flex flex-wrap gap-1.5" }, ETIQUETAS_GOL.map((et) => React.createElement("button", { key: et, type: "button", onClick: () => setEtiqueta(etiqueta === et ? null : et), className: "text-[10px] font-bold px-2.5 py-1 rounded-full", style: etiqueta === et ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, et))),
+        React.createElement("div", { className: "p-3 flex flex-wrap gap-2 items-center row-line" },
+            React.createElement("select", { value: jugador, onChange: (e) => setJugador(e.target.value) },
+                React.createElement("option", { value: "" }, propia ? "Jugador que anota en propia\u2026" : "Goleador (en cancha)\u2026"),
+                squad.map((p) => React.createElement("option", { key: p.id, value: p.id }, p.nombre))),
+            !propia && React.createElement("select", { value: asistencia, onChange: (e) => setAsistencia(e.target.value) },
+                React.createElement("option", { value: "" }, "Sin asistencia"),
+                squad.filter((p) => p.id !== jugador).map((p) => React.createElement("option", { key: p.id, value: p.id }, p.nombre))),
+            React.createElement(MinutoField, { minuto: minuto, extra: extra, onMinuto: setMinuto, onExtra: setExtra }),
+            React.createElement("button", { onClick: add, className: "btn-olive px-3 py-1.5 rounded-lg text-xs font-semibold" }, editId ? "\uD83D\uDCBE Guardar cambios" : (propia ? "\u2795 A\u00F1adir autogol" : "\u2795 A\u00F1adir gol"))),
+        React.createElement("div", { className: "space-y-1 text-xs max-h-32 overflow-y-auto p-3" }, eventos.map((e) => { const j = squadCompleto.find((p) => p.id === e.jugador), a = squadCompleto.find((p) => p.id === e.asistencia); return (React.createElement("div", { key: e.id, className: `flex justify-between bg-zinc-50 rounded-lg px-2 py-1.5${e.id === editId ? " ring-2 ring-amber-300" : ""}` },
+            React.createElement("span", null,
+                e.propia ? "\u26BD\u21A9\uFE0F Gol en propia \u2014 " : "\u26BD ", j === null || j === void 0 ? void 0 :
+                j.nombre,
+                " ",
+                a && React.createElement(React.Fragment, null,
+                    "\u00B7 \uD83C\uDD70\uFE0F ",
+                    a.nombre),
+                " ",
+                e.etiqueta && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-zinc-200 text-zinc-600" }, e.etiqueta),
+                " ",
+                React.createElement("span", { className: "text-zinc-400" }, fmtMinuto(e.minuto, e.extra || 0))),
+            React.createElement("span", { className: "flex items-center gap-2 shrink-0" },
+                React.createElement("button", { onClick: () => editar(e), title: "Editar", className: "text-zinc-400 hover:text-[#8F9500]" }, "\u270F\uFE0F"),
+                React.createElement("button", { onClick: () => { setEventos(eventos.filter((x) => x.id !== e.id)); if (e.id === editId) limpiar(); }, title: "Eliminar", className: "text-zinc-400 hover:text-red-500" }, "\u2715")))); }))));
+}
+function TarjetasPanel({ squad, squadCompleto, tarjetas, setTarjetas, lesiones, setLesiones }) {
+    const [jugador, setJugador] = useState("");
+    const [tipo, setTipo] = useState("amarilla");
+    const [minuto, setMinuto] = useState(1);
+    const [extra, setExtra] = useState(0);
+    const [lesionado, setLesionado] = useState(false);
+    const [gravedad, setGravedad] = useState(1);
+    const [editId, setEditId] = useState(null);
+    const limpiar = () => { setJugador(""); setTipo("amarilla"); setMinuto(1); setExtra(0); setLesionado(false); setGravedad(1); setEditId(null); };
+    const editar = (t) => {
+        setEditId(t.id);
+        setJugador(t.jugador || "");
+        setTipo(t.tipo || "amarilla");
+        setMinuto(t.minuto || 1);
+        setExtra(t.extra || 0);
+        setLesionado(false);
+        setGravedad(1);
+    };
+    const add = () => {
+        if (!jugador)
+            return;
+        const amarillasPrevias = tarjetas.filter((t) => t.jugador === jugador && t.tipo === "amarilla" && t.id !== editId).length;
+        if (editId) {
+            setTarjetas(tarjetas.map((x) => x.id !== editId ? x : { ...x, jugador, tipo, minuto, extra }));
+        }
+        else {
+            setTarjetas([...tarjetas, { id: uid("tj"), jugador, tipo, minuto, extra }]);
+        }
+        if (lesionado)
+            setLesiones([...lesiones, { id: uid("les"), jugador, gravedad, origen: "tarjeta" }]);
+        if (!editId) {
+            if (tipo === "roja")
+                alert("\uD83D\uDFE5 Roja directa: jugador expulsado.");
+            else if (amarillasPrevias >= 1)
+                alert("\uD83D\uDFE8\uD83D\uDFE8 Segunda amarilla: jugador expulsado.");
+        }
+        limpiar();
+    };
+    const lesionesTarjeta = lesiones.filter((l) => l.origen === "tarjeta");
+    return (React.createElement("div", { className: "card2" },
+        React.createElement("div", { className: "section-header px-4 py-2.5" }, "\uD83D\uDFE8\uD83D\uDFE5 Tarjetas"),
+        editId && React.createElement("div", { className: "mx-3 mt-3 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-between", style: { background: "#fffbeb", color: "#92400e" } },
+            "\u270F\uFE0F Editando tarjeta existente",
+            React.createElement("button", { type: "button", onClick: limpiar, className: "text-amber-700 hover:text-amber-900" }, "Cancelar")),
+        React.createElement("div", { className: "p-3 flex flex-wrap gap-2 items-center row-line" },
+            React.createElement("select", { value: jugador, onChange: (e) => setJugador(e.target.value) },
+                React.createElement("option", { value: "" }, "Jugador (en cancha)\u2026"),
+                squad.map((p) => React.createElement("option", { key: p.id, value: p.id }, p.nombre))),
+            React.createElement("select", { value: tipo, onChange: (e) => setTipo(e.target.value) },
+                React.createElement("option", { value: "amarilla" }, "Amarilla"),
+                React.createElement("option", { value: "roja" }, "Roja")),
+            React.createElement(MinutoField, { minuto: minuto, extra: extra, onMinuto: setMinuto, onExtra: setExtra }),
+            React.createElement("button", { onClick: add, className: "px-3 py-1.5 rounded-lg text-xs font-semibold", style: { background: "#e98a2b", color: "#fff" } }, editId ? "\uD83D\uDCBE Guardar cambios" : "\u2795 A\u00F1adir")),
+        React.createElement("div", { className: "px-3 pb-3 flex flex-wrap gap-2 items-center text-xs" },
+            React.createElement("label", { className: "flex items-center gap-1.5 cursor-pointer" },
+                React.createElement("input", { type: "checkbox", checked: lesionado, onChange: (e) => setLesionado(e.target.checked) }),
+                "\uD83D\uDE91 \u00BFSufri\u00F3 lesi\u00F3n?"),
+            lesionado && React.createElement("select", { value: gravedad, onChange: (e) => setGravedad(+e.target.value) },
+                React.createElement("option", { value: 1 }, "Leve (1 jornada)"),
+                React.createElement("option", { value: 2 }, "Moderada (2 jornadas)"))),
+        React.createElement("div", { className: "space-y-1 text-xs max-h-28 overflow-y-auto p-3" }, tarjetas.map((t) => { const j = squadCompleto.find((p) => p.id === t.jugador); const expulsado = jugadorExpulsadoEnPartido(tarjetas, t.jugador); return (React.createElement("div", { key: t.id, className: `flex justify-between bg-zinc-50 rounded-lg px-2 py-1.5${t.id === editId ? " ring-2 ring-amber-300" : ""}` },
+            React.createElement("span", null,
+                t.tipo === "amarilla" ? "🟨" : "🟥",
+                " ", j === null || j === void 0 ? void 0 :
+                j.nombre,
+                " ",
+                React.createElement("span", { className: "text-zinc-400" }, fmtMinuto(t.minuto, t.extra || 0)),
+                expulsado && React.createElement("span", { className: "text-red-500 font-bold" }, " \u2022 Expulsado")),
+            React.createElement("span", { className: "flex items-center gap-2 shrink-0" },
+                React.createElement("button", { onClick: () => editar(t), title: "Editar", className: "text-zinc-400 hover:text-[#8F9500]" }, "\u270F\uFE0F"),
+                React.createElement("button", { onClick: () => { setTarjetas(tarjetas.filter((x) => x.id !== t.id)); if (t.id === editId) limpiar(); }, title: "Eliminar", className: "text-zinc-400 hover:text-red-500" }, "\u2715")))); }),
+            lesionesTarjeta.map((l) => { const j = squadCompleto.find((p) => p.id === l.jugador); return (React.createElement("div", { key: l.id, className: "flex justify-between bg-red-50 rounded-lg px-2 py-1.5" },
+                React.createElement("span", null,
+                    "\uD83D\uDE91 ", j === null || j === void 0 ? void 0 :
+                    j.nombre,
+                    " ",
+                    React.createElement("span", { className: "text-zinc-400" }, l.gravedad === 2 ? "(moderada, 2 jornadas)" : "(leve, 1 jornada)")),
+                React.createElement("button", { onClick: () => setLesiones(lesiones.filter((x) => x.id !== l.id)) }, "\u2715"))); }))));
+}
+function SustitucionesPanel({ localXI, visXI, localSquad, visSquad, localEnCancha, visEnCancha, subs, setSubs, lesiones, setLesiones }) {
+    const [equipo, setEquipo] = useState("local");
+    const [sale, setSale] = useState("");
+    const [entra, setEntra] = useState("");
+    const [minuto, setMinuto] = useState(46);
+    const [extra, setExtra] = useState(0);
+    const [lesionado, setLesionado] = useState(false);
+    const [gravedad, setGravedad] = useState(1);
+    const [editId, setEditId] = useState(null);
+    const xiActual = equipo === "local" ? localXI : visXI;
+    const squadActual = equipo === "local" ? localSquad : visSquad;
+    const enCancha = equipo === "local" ? localEnCancha : visEnCancha;
+    // La banca son jugadores que ni empezaron de titulares ni ya entraron de cambio (y no han sido expulsados desde la banca, imposible).
+    // Al editar una sustitución existente, se incluye también al jugador que ya entraba en ese cambio, para no perderlo del select.
+    const banca = squadActual.filter((p) => (!xiActual.includes(p.id) && !subs.some((s) => s.entra === p.id && s.id !== editId)) || p.id === entra);
+    const limpiar = () => { setSale(""); setEntra(""); setMinuto(46); setExtra(0); setLesionado(false); setGravedad(1); setEditId(null); };
+    const editar = (s) => {
+        setEditId(s.id);
+        setEquipo(s.equipo || "local");
+        setSale(s.sale || "");
+        setEntra(s.entra || "");
+        setMinuto(s.minuto || 46);
+        setExtra(s.extra || 0);
+        setLesionado(false);
+        setGravedad(1);
+    };
+    const add = () => {
+        if (!sale || !entra)
+            return;
+        if (editId) {
+            setSubs(subs.map((x) => x.id !== editId ? x : { ...x, equipo, sale, entra, minuto, extra }));
+        }
+        else {
+            setSubs([...subs, { id: uid("sub"), equipo, sale, entra, minuto, extra }]);
+        }
+        if (lesionado)
+            setLesiones([...lesiones, { id: uid("les"), jugador: sale, gravedad, origen: "cambio" }]);
+        limpiar();
+    };
+    const lesionesCambio = lesiones.filter((l) => l.origen === "cambio");
+    return (React.createElement("div", { className: "card2" },
+        React.createElement("div", { className: "section-header px-4 py-2.5" }, "\uD83D\uDD04 Sustituciones"),
+        editId && React.createElement("div", { className: "mx-3 mt-3 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-between", style: { background: "#fffbeb", color: "#92400e" } },
+            "\u270F\uFE0F Editando sustituci\u00F3n existente",
+            React.createElement("button", { type: "button", onClick: limpiar, className: "text-amber-700 hover:text-amber-900" }, "Cancelar")),
+        React.createElement("div", { className: "p-3 flex flex-wrap gap-2 items-center row-line" },
+            React.createElement("select", { value: equipo, onChange: (e) => { setEquipo(e.target.value); setSale(""); setEntra(""); } },
+                React.createElement("option", { value: "local" }, "Local"),
+                React.createElement("option", { value: "vis" }, "Visitante")),
+            React.createElement("select", { value: sale, onChange: (e) => setSale(e.target.value) },
+                React.createElement("option", { value: "" }, "Sale (en cancha)\u2026"),
+                squadActual.filter((p) => enCancha.has(p.id) || p.id === sale).map((p) => React.createElement("option", { key: p.id, value: p.id }, p.nombre))),
+            React.createElement("select", { value: entra, onChange: (e) => setEntra(e.target.value) },
+                React.createElement("option", { value: "" }, "Entra (banca)\u2026"),
+                banca.map((p) => React.createElement("option", { key: p.id, value: p.id }, p.nombre))),
+            React.createElement(MinutoField, { minuto: minuto, extra: extra, onMinuto: setMinuto, onExtra: setExtra }),
+            React.createElement("button", { onClick: add, className: "px-3 py-1.5 rounded-lg text-xs font-semibold", style: { background: "#1D6FE0", color: "#fff" } }, editId ? "\uD83D\uDCBE Guardar cambios" : "\u2795 A\u00F1adir")),
+        React.createElement("div", { className: "px-3 pb-3 flex flex-wrap gap-2 items-center text-xs" },
+            React.createElement("label", { className: "flex items-center gap-1.5 cursor-pointer" },
+                React.createElement("input", { type: "checkbox", checked: lesionado, onChange: (e) => setLesionado(e.target.checked) }),
+                "\uD83D\uDE91 \u00BFSali\u00F3 lesionado?"),
+            lesionado && React.createElement("select", { value: gravedad, onChange: (e) => setGravedad(+e.target.value) },
+                React.createElement("option", { value: 1 }, "Leve (1 jornada)"),
+                React.createElement("option", { value: 2 }, "Moderada (2 jornadas)"))),
+        React.createElement("div", { className: "space-y-1 text-xs max-h-28 overflow-y-auto p-3" }, subs.map((s) => { const sq = s.equipo === "local" ? localSquad : visSquad; const j1 = sq.find((p) => p.id === s.sale), j2 = sq.find((p) => p.id === s.entra); return (React.createElement("div", { key: s.id, className: `flex justify-between bg-zinc-50 rounded-lg px-2 py-1.5${s.id === editId ? " ring-2 ring-amber-300" : ""}` },
+            React.createElement("span", null,
+                "\uD83D\uDD3B", j1 === null || j1 === void 0 ? void 0 :
+                j1.nombre,
+                " \uD83D\uDD3A", j2 === null || j2 === void 0 ? void 0 :
+                j2.nombre,
+                " ",
+                React.createElement("span", { className: "text-zinc-400" }, fmtMinuto(s.minuto, s.extra || 0))),
+            React.createElement("span", { className: "flex items-center gap-2 shrink-0" },
+                React.createElement("button", { onClick: () => editar(s), title: "Editar", className: "text-zinc-400 hover:text-[#8F9500]" }, "\u270F\uFE0F"),
+                React.createElement("button", { onClick: () => { setSubs(subs.filter((x) => x.id !== s.id)); if (s.id === editId) limpiar(); }, title: "Eliminar", className: "text-zinc-400 hover:text-red-500" }, "\u2715")))); }),
+            lesionesCambio.map((l) => { const sq = [...localSquad, ...visSquad]; const j = sq.find((p) => p.id === l.jugador); return (React.createElement("div", { key: l.id, className: "flex justify-between bg-red-50 rounded-lg px-2 py-1.5" },
+                React.createElement("span", null,
+                    "\uD83D\uDE91 ", j === null || j === void 0 ? void 0 :
+                    j.nombre,
+                    " ",
+                    React.createElement("span", { className: "text-zinc-400" }, l.gravedad === 2 ? "(moderada, 2 jornadas)" : "(leve, 1 jornada)")),
+                React.createElement("button", { onClick: () => setLesiones(lesiones.filter((x) => x.id !== l.id)) }, "\u2715"))); }))));
+}
+// ---------- Mercado ----------
+function JugadorMercadoInfo({ jugador: p }) {
+    return (React.createElement("div", { className: "flex items-center gap-3 card2 p-2.5" },
+        p.foto ? React.createElement("img", { src: p.foto, className: "w-10 h-10 rounded-full object-cover", style: { flexShrink: 0 } }) : React.createElement("div", { className: "avatar-ph w-10 h-10 rounded-full text-xs font-bold", style: { flexShrink: 0 } }, p.dorsal),
+        React.createElement("div", { className: "flex-1", style: { minWidth: 0 } },
+            React.createElement("div", { className: "font-semibold text-sm", style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.nombre),
+            React.createElement("div", { className: "text-[11px] text-zinc-500" },
+                "#",
+                p.dorsal,
+                " \u00B7 ",
+                p.posicion,
+                " \u00B7 GRL ",
+                valoracionEfectiva(p).toFixed(0))),
+        React.createElement("div", { className: "text-right", style: { flexShrink: 0 } },
+            React.createElement("div", { className: "text-[#8F9500] font-bold text-xs" }, fmtMoney(p.valorMercado)),
+            React.createElement("div", { className: "text-[10px] text-zinc-400" },
+                "\u26BD",
+                p.goles || 0,
+                " \u00B7 \uD83C\uDFAF",
+                p.asistencias || 0))));
+}
+function Mercado({ teams, setTeams, players, setPlayers, transfers, setTransfers, abierto, aperturaCompleta, clausuraCompleta, clausuraIniciada, liguillaIniciada }) {
+    const [subTab, setSubTab] = usePersistedState("mercadoSubTab", "fichajes");
+    const contenidoFichajes = () => {
+        if (!abierto) {
+            const estadoApertura = !aperturaCompleta ? "⏳ Apertura en curso" : clausuraIniciada ? "🔒 Ventana de Apertura cerrada (ya arrancó el Clausura)" : "✅ Apertura completo";
+            const estadoClausura = !clausuraCompleta ? "⏳ Clausura en curso" : liguillaIniciada ? "🔒 Ventana de Clausura cerrada (ya arrancó la Liguilla)" : "✅ Clausura completo";
+            return React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm space-y-2" },
+                React.createElement("div", { className: "text-3xl" }, "\uD83D\uDD12"),
+                React.createElement("div", { className: "font-bold text-zinc-600" }, "El mercado de fichajes está cerrado."),
+                React.createElement("div", null, "Se abre al terminar por completo el Apertura o el Clausura, y se cierra en cuanto arranca la fase siguiente (Clausura o Liguilla)."),
+                React.createElement("div", { className: "text-xs" }, estadoApertura, " · ", estadoClausura));
+        }
+        return MercadoInterno({ teams, setTeams, players, setPlayers, transfers, setTransfers });
+    };
+    return React.createElement("div", { className: "space-y-3" },
+        React.createElement("h2", { className: "text-lg font-black" }, "Mercado de fichajes"),
+        React.createElement("div", { className: "tabs-even" }, [["fichajes", "\uD83D\uDED2 Fichajes"], ["finanzas", "\uD83D\uDCB0 Finanzas del Club"]].map(([val, label]) => React.createElement("button", { key: val, type: "button", onClick: () => setSubTab(val), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: subTab === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label))),
+        subTab === "fichajes" && contenidoFichajes(),
+        subTab === "finanzas" && React.createElement(FinanzasMercadoView, { teams: teams }));
+}
+// Selector de equipo + panel de finanzas, disponible desde el Mercado sin depender de si está abierto o cerrado.
+function FinanzasMercadoView({ teams }) {
+    const [equipoId, setEquipoId] = usePersistedState("mercadoFinanzasEquipo", "");
+    const team = teams.find((t) => t.id === equipoId);
+    return React.createElement("div", { className: "space-y-3" },
+        React.createElement("select", { className: "w-full md:w-72", value: equipoId, onChange: (e) => setEquipoId(e.target.value) },
+            React.createElement("option", { value: "" }, "Selecciona un equipo\u2026"),
+            teams.map((t) => React.createElement("option", { key: t.id, value: t.id }, t.nombre))),
+        team ? React.createElement(FinanzasPanel, { team: team }) : React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Selecciona un equipo para ver su desglose de presupuesto y su historial de movimientos."));
+}
+function MercadoInterno({ teams, setTeams, players, setPlayers, transfers, setTransfers }) {
+    const [equipoA, setEquipoA] = useState("");
+    const [equipoB, setEquipoB] = useState("");
+    const [jugadorA, setJugadorA] = useState("");
+    const [jugadorB, setJugadorB] = useState("");
+    const [dineroAaB, setDineroAaB] = useState(0);
+    const [dineroBaA, setDineroBaA] = useState(0);
+    const squadA = players.filter((p) => p.equipoId === equipoA);
+    const squadB = players.filter((p) => p.equipoId === equipoB);
+    const teamA = teams.find((t) => t.id === equipoA), teamB = teams.find((t) => t.id === equipoB);
+    const hacerFichaje = () => {
+        if (!jugadorA || !jugadorB) {
+            alert("Selecciona un jugador de cada equipo para el intercambio.");
+            return;
+        }
+        if (teamA.presupuesto < dineroAaB) {
+            alert(`${teamA.nombre} no tiene presupuesto suficiente.`);
+            return;
+        }
+        if (teamB.presupuesto < dineroBaA) {
+            alert(`${teamB.nombre} no tiene presupuesto suficiente.`);
+            return;
+        }
+        const pA = players.find((p) => p.id === jugadorA), pB = players.find((p) => p.id === jugadorB);
+        setPlayers(players.map((p) => { if (p.id === jugadorA)
+            return { ...p, equipoId: equipoB }; if (p.id === jugadorB)
+            return { ...p, equipoId: equipoA }; return p; }));
+        setTeams(teams.map((t) => {
+            if (t.id === equipoA) {
+                let nt = t;
+                if (dineroAaB > 0)
+                    nt = registrarMovimientoCaja(nt, { concepto: `Fichaje: pago por ${pB ? pB.nombre : "jugador"} (cede a ${pA ? pA.nombre : "jugador"})`, monto: -dineroAaB });
+                if (dineroBaA > 0)
+                    nt = registrarMovimientoCaja(nt, { concepto: `Fichaje: cobro por cesión de ${pA ? pA.nombre : "jugador"}`, monto: dineroBaA });
+                return nt;
+            }
+            if (t.id === equipoB) {
+                let nt = t;
+                if (dineroBaA > 0)
+                    nt = registrarMovimientoCaja(nt, { concepto: `Fichaje: pago por ${pA ? pA.nombre : "jugador"} (cede a ${pB ? pB.nombre : "jugador"})`, monto: -dineroBaA });
+                if (dineroAaB > 0)
+                    nt = registrarMovimientoCaja(nt, { concepto: `Fichaje: cobro por cesión de ${pB ? pB.nombre : "jugador"}`, monto: dineroAaB });
+                return nt;
+            }
+            return t;
+        }));
+        setTransfers([{ id: uid("tr"), fecha: new Date().toISOString(), equipoA: teamA.nombre, equipoB: teamB.nombre, jugadorA: pA === null || pA === void 0 ? void 0 : pA.nombre, jugadorB: pB === null || pB === void 0 ? void 0 : pB.nombre, dineroAaB, dineroBaA }, ...transfers]);
+        setJugadorA("");
+        setJugadorB("");
+        setDineroAaB(0);
+        setDineroBaA(0);
+        alert("Fichaje realizado.");
+    };
+    const pA = players.find((p) => p.id === jugadorA);
+    const pB = players.find((p) => p.id === jugadorB);
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("h2", { className: "text-lg font-black" }, "Mercado de fichajes"),
+        React.createElement("div", { className: "grid md:grid-cols-3 gap-2" }, teams.slice().sort((a, b) => b.presupuesto - a.presupuesto).map((t) => (React.createElement("div", { key: t.id, className: "card2 p-3 flex justify-between items-center text-sm" },
+            React.createElement("span", null, t.nombre),
+            React.createElement("span", { className: "font-semibold flex items-center gap-1 text-[#8F9500]" },
+                "\uD83D\uDCB0 ",
+                fmtMoney(t.presupuesto)))))),
+        React.createElement("div", { className: "card2" },
+            React.createElement("div", { className: "section-header px-4 py-2.5 flex items-center gap-2" }, "\uD83D\uDD01 Intercambio de jugadores"),
+            React.createElement("div", { className: "p-4 grid md:grid-cols-2 gap-4" },
+                React.createElement("div", { className: "space-y-2" },
+                    React.createElement("select", { className: "w-full", value: equipoA, onChange: (e) => { setEquipoA(e.target.value); setJugadorA(""); } },
+                        React.createElement("option", { value: "" }, "Equipo A\u2026"),
+                        teams.map((t) => React.createElement("option", { key: t.id, value: t.id, disabled: t.id === equipoB }, t.nombre))),
+                    React.createElement("select", { className: "w-full", value: jugadorA, onChange: (e) => setJugadorA(e.target.value), disabled: !equipoA },
+                        React.createElement("option", { value: "" }, "Jugador que sale de A\u2026"),
+                        squadA.map((p) => React.createElement("option", { key: p.id, value: p.id },
+                            p.nombre,
+                            " \u2014 ",
+                            fmtMoney(p.valorMercado)))),
+                    pA && React.createElement(JugadorMercadoInfo, { jugador: pA }),
+                    React.createElement("label", { className: "text-xs text-zinc-500 flex flex-col gap-0.5" },
+                        "Dinero que A a\u00F1ade",
+                        React.createElement(NumberField, { min: 0, value: dineroAaB, onCommit: (n) => setDineroAaB(n) }))),
+                React.createElement("div", { className: "space-y-2" },
+                    React.createElement("select", { className: "w-full", value: equipoB, onChange: (e) => { setEquipoB(e.target.value); setJugadorB(""); } },
+                        React.createElement("option", { value: "" }, "Equipo B\u2026"),
+                        teams.map((t) => React.createElement("option", { key: t.id, value: t.id, disabled: t.id === equipoA }, t.nombre))),
+                    React.createElement("select", { className: "w-full", value: jugadorB, onChange: (e) => setJugadorB(e.target.value), disabled: !equipoB },
+                        React.createElement("option", { value: "" }, "Jugador que sale de B\u2026"),
+                        squadB.map((p) => React.createElement("option", { key: p.id, value: p.id },
+                            p.nombre,
+                            " \u2014 ",
+                            fmtMoney(p.valorMercado)))),
+                    pB && React.createElement(JugadorMercadoInfo, { jugador: pB }),
+                    React.createElement("label", { className: "text-xs text-zinc-500 flex flex-col gap-0.5" },
+                        "Dinero que B a\u00F1ade",
+                        React.createElement(NumberField, { min: 0, value: dineroBaA, onCommit: (n) => setDineroBaA(n) })))),
+            React.createElement("div", { className: "px-4 pb-4" },
+                React.createElement("button", { onClick: hacerFichaje, className: "btn-olive px-4 py-2.5 rounded-lg text-sm font-bold" }, "\u2714\uFE0F Confirmar fichaje"))),
+        React.createElement("div", { className: "card2" },
+            React.createElement("div", { className: "section-header px-4 py-2.5" }, "Historial de fichajes"),
+            React.createElement("div", { className: "space-y-1 text-xs max-h-56 overflow-y-auto p-3" },
+                transfers.map((t) => (React.createElement("div", { key: t.id, className: "bg-zinc-50 rounded-lg px-3 py-2" },
+                    React.createElement("b", null, t.equipoA),
+                    " cede a ",
+                    React.createElement("b", null, t.jugadorA),
+                    " \u00B7 ",
+                    React.createElement("b", null, t.equipoB),
+                    " cede a ",
+                    React.createElement("b", null, t.jugadorB),
+                    (t.dineroAaB > 0 || t.dineroBaA > 0) && React.createElement("span", { className: "text-[#8F9500]" },
+                        " \u2014 ",
+                        t.dineroAaB > 0 && `${t.equipoA} paga ${fmtMoney(t.dineroAaB)}`,
+                        " ",
+                        t.dineroBaA > 0 && `${t.equipoB} paga ${fmtMoney(t.dineroBaA)}`)))),
+                !transfers.length && React.createElement("div", { className: "text-zinc-500" }, "Sin fichajes todav\u00EDa.")))));
+}
+// ---------- XI Ideal de la jornada (equipo ideal manual, visual) ----------
+// Cuenta, para cada jugador, cu\u00E1ntas jornadas (de todas las fases) fue titular en el XI Ideal manual.
+// No cuenta suplencias: solo los 11 titulares (arquero + l\u00EDneas) de cada jornada con xiIdeal guardado.
+function contarAparicionesXi(todasLasJornadas) {
+    const mapa = new Map();
+    (todasLasJornadas || []).forEach((j) => {
+        const xi = j.xiIdeal;
+        if (!xi)
+            return;
+        const titulares = [xi.PT, ...(xi.filas ? xi.filas.flat() : [])].filter(Boolean);
+        titulares.forEach((id) => mapa.set(id, (mapa.get(id) || 0) + 1));
+    });
+    return mapa;
+}
+function colorScore(s) {
+    if (s == null)
+        return "#71717a";
+    if (s >= 9)
+        return "#1D6FE0";
+    if (s >= 8)
+        return "#0d9488";
+    if (s >= 7)
+        return "#3f9750";
+    return "#71717a";
+}
+// Visual de un jugador sobre el campo: foto, insignia de score, posición real y escudo del equipo (reemplaza la bandera).
+// Usa medidas relativas (% + max-width) en vez de píxeles fijos para poder achicarse cuando la formación
+// tiene muchas columnas en una fila y el ancho disponible es chico (celulares).
+function JugadorPitchVisual({ jugador, team, score, placeholder, role }) {
+    const posicionBadge = jugador ? jugador.posicion : role;
+    return React.createElement("div", { className: "flex flex-col items-center gap-1", style: { width: "100%", maxWidth: "72px", minWidth: 0 } },
+        posicionBadge && React.createElement("div", { className: "font-black", style: { fontSize: "9px", color: "#101114", background: "#F4F7DE", border: "1px solid #B4BC00", borderRadius: "5px", padding: "0 4px", lineHeight: "13px", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, posicionBadge),
+        React.createElement("div", { style: { position: "relative", width: "72%", maxWidth: "52px", aspectRatio: "1 / 1" } },
+            React.createElement("div", { style: { width: "100%", height: "100%", borderRadius: "9999px", overflow: "hidden", border: "2px solid rgba(255,255,255,.55)", background: jugador ? "#3a3a3f" : "rgba(255,255,255,.12)", display: "flex", alignItems: "center", justifyContent: "center" } }, jugador ? (jugador.foto ? React.createElement("img", { src: jugador.foto, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } }) : React.createElement("span", { className: "text-white font-black text-xs" },
+                "#",
+                jugador.dorsal)) : React.createElement("span", { className: "text-white font-black text-lg", style: { opacity: .6 } }, "+")),
+            jugador && score != null && React.createElement("div", { style: { position: "absolute", top: "-6px", left: "-6px", background: colorScore(score), color: "#fff", fontSize: "10px", fontWeight: 900, padding: "1px 5px", borderRadius: "5px", boxShadow: "0 1px 3px rgba(0,0,0,.4)" } }, score.toFixed(1)),
+            jugador && React.createElement("div", { style: { position: "absolute", bottom: "-4px", right: "-4px", width: "19px", height: "19px", borderRadius: "9999px", overflow: "hidden", border: "2px solid #101114", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center" } }, team && team.escudo ? React.createElement("img", { src: team.escudo, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } }) : React.createElement("span", { style: { fontSize: "9px", fontWeight: 900, color: "#8F9500" } }, team ? team.nombre.slice(0, 1) : "?"))),
+        React.createElement("div", { className: "text-white text-[9px] font-bold text-center", style: { textShadow: "0 1px 2px rgba(0,0,0,.6)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" } }, jugador ? `#${jugador.dorsal} ${(jugador.nombreDorsal && jugador.nombreDorsal.trim()) || jugador.nombre}` : placeholder));
+}
+// Slot editable: al tocarlo se abre el selector de jugador.
+function SlotPicker({ jugadorId, disabledIds, players, teams, elegiblesIds, statsMap, placeholder, role, onPick }) {
+    const [editando, setEditando] = useState(false);
+    const jugador = players.find((p) => p.id === jugadorId);
+    if (editando) {
+        const grupos = ["Portero", "Defensor", "Mediocampista", "Delantero"];
+        return React.createElement("select", { autoFocus: true, className: "text-[10px] w-28 px-1 py-1", value: jugadorId || "", onChange: (e) => { onPick(e.target.value || null); setEditando(false); }, onBlur: () => setEditando(false) },
+            React.createElement("option", { value: "" }, "\u2014"),
+            grupos.map((grp) => {
+                const opts = players.filter((p) => elegiblesIds.has(p.id) && POSICION_GRUPO(p.posicion) === grp && (p.id === jugadorId || !disabledIds.includes(p.id))).sort((a, b) => { var _a, _b; return (((_a = statsMap.get(b.id)) === null || _a === void 0 ? void 0 : _a.score) || 0) - (((_b = statsMap.get(a.id)) === null || _b === void 0 ? void 0 : _b.score) || 0); });
+                if (!opts.length)
+                    return null;
+                return React.createElement("optgroup", { key: grp, label: grp }, opts.map((p) => { const st = statsMap.get(p.id); return React.createElement("option", { key: p.id, value: p.id }, `#${p.dorsal} ${p.nombre} \u2014 ${st.score.toFixed(1)} (${st.goles}G ${st.asistencias}A)`); }));
+            }));
+    }
+    const st = jugador && statsMap.get(jugador.id);
+    const team = jugador ? teams.find((t) => t.id === jugador.equipoId) : null;
+    return React.createElement("button", { type: "button", onClick: () => setEditando(true), style: { background: "none", border: "none", cursor: "pointer", padding: 0, minWidth: 0 } },
+        React.createElement(JugadorPitchVisual, { jugador: jugador, team: team, score: st ? st.score : null, placeholder: placeholder, role: role }));
+}
+// Slot est\u00E1tico (solo lectura), usado en la vista de exportaci\u00F3n.
+function SlotDisplay({ jugadorId, players, teams, statsMap, placeholder, role }) {
+    const jugador = players.find((p) => p.id === jugadorId);
+    const st = jugador && statsMap.get(jugador.id);
+    const team = jugador ? teams.find((t) => t.id === jugador.equipoId) : null;
+    return React.createElement(JugadorPitchVisual, { jugador: jugador, team: team, score: st ? st.score : null, placeholder: placeholder, role: role });
+}
+// Campo de juego reutilizable (editor y exportaci\u00F3n comparten el mismo layout).
+// `lineasRoles` es la plantilla de roles (de la formaci\u00F3n elegida) y `filas` son los ids seleccionados con la misma forma.
+function FormacionField({ lineasRoles, filas, ptId, renderSlot, renderPT }) {
+    return React.createElement("div", { className: "rounded-2xl", style: { background: "linear-gradient(180deg,#1c1d22,#0e0f12)", border: "1px solid #2c2c30", padding: "16px 8px", position: "relative", overflow: "hidden", maxWidth: "100%", boxSizing: "border-box" } },
+        React.createElement("div", { style: { position: "absolute", top: "10px", left: "50%", transform: "translateX(-50%)", width: "160px", maxWidth: "70%", height: "80px", border: "1.5px solid rgba(255,255,255,.10)", borderTop: "none", borderRadius: "0 0 160px 160px", pointerEvents: "none" } }),
+        React.createElement("div", { className: "space-y-3", style: { position: "relative" } },
+            lineasRoles.map((roles, li) => React.createElement("div", { key: li, className: "grid gap-1", style: { gridTemplateColumns: `repeat(${roles.length}, minmax(0,1fr))`, justifyItems: "center" } }, roles.map((role, si) => renderSlot(li, si, filas[li] ? filas[li][si] : null, role)))),
+            React.createElement("div", { className: "grid", style: { gridTemplateColumns: "minmax(0,1fr)", justifyItems: "center" } }, renderPT ? renderPT() : null)));
+}
+// ---------- Exportar XI Ideal ----------
+function ExportarXiView({ xi, formacion, jornadaNumero, titulo, players, teams, statsMap, onClose }) {
+    const lineasRoles = (FORMACIONES_XI[formacion] || FORMACIONES_XI["4-3-3"]).lineas;
+    const renderSlot = (li, si, id, role) => React.createElement(SlotDisplay, { key: `${li}-${si}`, jugadorId: id, players: players, teams: teams, statsMap: statsMap, placeholder: role, role: role });
+    const renderPT = () => React.createElement(SlotDisplay, { jugadorId: xi.PT, players: players, teams: teams, statsMap: statsMap, placeholder: "PT", role: "PT" });
+    const suplentes = xi.suplentes && xi.suplentes.length === 5 ? xi.suplentes : [null, null, null, null, null];
+    const encabezado = titulo || `Jornada ${jornadaNumero}`;
+    return React.createElement("div", { className: "export-overlay" },
+        React.createElement("div", { className: "export-noprint sticky top-0 export-bar flex items-center justify-between px-4 py-3 z-10" },
+            React.createElement("button", { onClick: onClose, className: "text-white text-sm flex items-center gap-1" }, "\u2039 Cerrar"),
+            React.createElement("button", { onClick: () => window.print(), className: "btn-olive text-sm px-4 py-2 rounded-lg font-semibold flex items-center gap-1.5" },
+                React.createElement(Icon, { size: 14 }, "\uD83D\uDDA8\uFE0F"),
+                " Imprimir / Guardar PDF")),
+        React.createElement("div", { style: { maxWidth: "480px", margin: "0 auto", padding: "0 12px 40px" } },
+            React.createElement("div", { className: "text-center py-4" },
+                React.createElement("div", { className: "text-white font-black text-lg" },
+                    "\uD83C\uDF1F XI Ideal \u2014 ",
+                    encabezado),
+                React.createElement("div", { className: "text-zinc-400 text-xs" },
+                    "Formaci\u00F3n ",
+                    formacion)),
+            React.createElement(FormacionField, { lineasRoles: lineasRoles, filas: xi.filas, renderSlot: renderSlot, renderPT: renderPT }),
+            React.createElement("div", { className: "mt-3 rounded-2xl", style: { background: "linear-gradient(180deg,#1c1d22,#0e0f12)", border: "1px solid #2c2c30", padding: "14px 12px" } },
+                React.createElement("div", { className: "text-white text-[10px] font-bold uppercase tracking-wide mb-2 opacity-70 text-center" }, "Suplentes"),
+                React.createElement("div", { className: "flex flex-wrap gap-2 justify-center" }, suplentes.map((id, i) => React.createElement(SlotDisplay, { key: `SUP-${i}`, jugadorId: id, players: players, teams: teams, statsMap: statsMap, placeholder: "Suplente" }))))));
+}
+function ExportarXiBoton({ xi, formacion, jornadaNumero, titulo, players, teams, statsMap }) {
+    const [open, setOpen] = useState(false);
+    return React.createElement(React.Fragment, null,
+        React.createElement("button", { type: "button", onClick: () => setOpen(true), className: "text-[11px] px-2.5 py-1.5 rounded-full font-semibold flex items-center gap-1.5", style: { background: "#F4F7DE", color: "#8F9500", border: "1px solid #B4BC00" } },
+            React.createElement(Icon, { size: 12 }, "\uD83D\uDCF7"),
+            " Exportar XI Ideal"),
+        open && React.createElement(ExportarXiView, { xi: xi, formacion: formacion, jornadaNumero: jornadaNumero, titulo: titulo, players: players, teams: teams, statsMap: statsMap, onClose: () => setOpen(false) }));
+}
+// Fila de stats de un jugador (titular o suplente) en el listado de la jornada.
+function FilaStatsJugadorJornada({ p, teams, statsMap, vecesXi }) {
+    var _a;
+    const st = statsMap.get(p.id);
+    const veces = vecesXi ? vecesXi.get(p.id) || 0 : 0;
+    return React.createElement("div", { className: "flex justify-between items-center px-4 py-2 text-xs" },
+        React.createElement("div", null,
+            React.createElement("div", null,
+                p.nombre,
+                " ",
+                React.createElement("span", { className: "text-zinc-400" },
+                    "(",
+                    ((_a = teams.find((t) => t.id === p.equipoId)) === null || _a === void 0 ? void 0 : _a.nombre) || "\u2014",
+                    ")")),
+            React.createElement("div", { className: "text-[10px] text-zinc-400" },
+                "#",
+                p.dorsal,
+                " \u00B7 ",
+                p.posicion,
+                " \u00B7 GRL ",
+                valoracionEfectiva(p).toFixed(0),
+                vecesXi ? ` \u00B7 \u2B50 ${veces}x en el XI Ideal` : "")),
+        st && React.createElement("span", { className: "font-black text-[#8F9500] text-right" },
+            st.score.toFixed(1),
+            React.createElement("div", { className: "text-[10px] text-zinc-400 font-normal" },
+                st.goles,
+                "G \u00B7 ",
+                st.asistencias,
+                "A")));
+}
+function XiIdealJornada({ jornadas, setJornadas, teams, players, vecesXi }) {
+    if (!jornadas.length)
+        return React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay una Liguilla generada. And\u00E1 a la pesta\u00F1a Tabla \u2192 Liguilla para generarla cuando terminen Apertura y Clausura.");
+    return XiIdealJornadaInterno({ jornadas, setJornadas, teams, players, vecesXi });
+}
+function XiIdealJornadaInterno({ jornadas, setJornadas, teams, players, vecesXi }) {
+    const [jn, setJn] = usePersistedState("xiIdealJn", 1);
+    const jornada = jornadas.find((j) => j.numero === jn);
+    const formacionDefault = "4-3-3";
+    const suplentesVacio = [null, null, null, null, null];
+    const filasVacias = (nombreFormacion) => (FORMACIONES_XI[nombreFormacion] || FORMACIONES_XI[formacionDefault]).lineas.map((roles) => roles.map(() => null));
+    const xiVacio = { formacion: formacionDefault, PT: null, filas: filasVacias(formacionDefault), suplentes: suplentesVacio };
+    const xiGuardado = jornada === null || jornada === void 0 ? void 0 : jornada.xiIdeal;
+    // Compatibilidad: si la jornada tiene formaci\u00F3n desconocida o estructura antigua (sin "filas"), se usa vac\u00EDo.
+    const xi = xiGuardado && xiGuardado.filas && FORMACIONES_XI[xiGuardado.formacion] ? xiGuardado : xiVacio;
+    const formacion = xi.formacion || formacionDefault;
+    const lineasRoles = (FORMACIONES_XI[formacion] || FORMACIONES_XI[formacionDefault]).lineas;
+    const suplentes = xi.suplentes && xi.suplentes.length === 5 ? xi.suplentes : suplentesVacio;
+    const updateXi = (nuevo) => setJornadas(jornadas.map((j) => j.numero !== jn ? j : { ...j, xiIdeal: nuevo }));
+    const seleccionadosXi = [xi.PT, ...xi.filas.flat()].filter(Boolean);
+    const seleccionadosSup = suplentes.filter(Boolean);
+    const seleccionados = [...seleccionadosXi, ...seleccionadosSup];
+    const setSlot = (grupo, li, si, jugadorId) => {
+        if (grupo === "PT") {
+            updateXi({ ...xi, PT: jugadorId });
+        }
+        else if (grupo === "SUP") {
+            const arr = [...suplentes];
+            arr[si] = jugadorId;
+            updateXi({ ...xi, suplentes: arr });
+        }
+        else {
+            const filas = xi.filas.map((fila, i) => i !== li ? fila : fila.map((v, j) => j === si ? jugadorId : v));
+            updateXi({ ...xi, filas: filas });
+        }
+    };
+    const cambiarFormacion = (nombreFormacion) => {
+        const nuevasLineas = FORMACIONES_XI[nombreFormacion].lineas;
+        const idsPlanos = xi.filas.flat().filter(Boolean);
+        let cursor = 0;
+        const nuevasFilas = nuevasLineas.map((roles) => roles.map(() => idsPlanos[cursor++] || null));
+        updateXi({ ...xi, formacion: nombreFormacion, filas: nuevasFilas });
+    };
+    const elegiblesMap = jugadoresElegiblesJornada(jornada);
+    const elegiblesIds = new Set(elegiblesMap.keys());
+    const jugadoresXi = players.filter((p) => seleccionadosXi.includes(p.id));
+    const jugadoresSup = players.filter((p) => seleccionadosSup.includes(p.id));
+    const renderSlotEditable = (li, si, id, role) => React.createElement(SlotPicker, { key: `${li}-${si}`, jugadorId: id, disabledIds: seleccionados, players: players, teams: teams, elegiblesIds: elegiblesIds, statsMap: elegiblesMap, placeholder: role, role: role, onPick: (v) => setSlot("LINEA", li, si, v) });
+    const renderPTEditable = () => React.createElement(SlotPicker, { jugadorId: xi.PT, disabledIds: seleccionados, players: players, teams: teams, elegiblesIds: elegiblesIds, statsMap: elegiblesMap, placeholder: "PT", role: "PT", onPick: (v) => setSlot("PT", 0, 0, v) });
+    const renderSuplente = (idx, id) => React.createElement(SlotPicker, { key: `SUP-${idx}`, jugadorId: id, disabledIds: seleccionados, players: players, teams: teams, elegiblesIds: elegiblesIds, statsMap: elegiblesMap, placeholder: "Suplente", onPick: (v) => setSlot("SUP", 0, idx, v) });
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+            React.createElement("h2", { className: "text-lg font-black" }, "\uD83C\uDF1F XI Ideal de la jornada"),
+            React.createElement("div", { className: "flex gap-2" },
+                React.createElement("select", { value: jn, onChange: (e) => setJn(+e.target.value) }, jornadas.map((j) => React.createElement("option", { key: j.numero, value: j.numero }, j.nombre || `Jornada ${j.numero}`))),
+                React.createElement("select", { value: formacion, onChange: (e) => cambiarFormacion(e.target.value) }, Object.keys(FORMACIONES_XI).map((f) => React.createElement("option", { key: f, value: f }, f))))),
+        React.createElement("p", { className: "text-xs text-zinc-500" }, "Elecci\u00F3n manual entre 16 formaciones: toc\u00E1 un espacio para elegir entre los jugadores que disputaron al menos 5 minutos en esa jornada. Las opciones se agrupan por posici\u00F3n y se ordenan por score. Adem\u00E1s del XI, pod\u00E9s elegir 5 suplentes."),
+        React.createElement("div", { className: "card2 p-3 flex items-center justify-between flex-wrap gap-2 text-xs font-semibold text-zinc-500" },
+            React.createElement("span", null,
+                seleccionadosXi.length,
+                "/11 titulares \u00B7 ",
+                seleccionadosSup.length,
+                "/5 suplentes \u00B7 ",
+                elegiblesIds.size,
+                " jugadores elegibles"),
+            React.createElement("div", { className: "flex items-center gap-2" },
+                seleccionadosXi.length > 0 && React.createElement("span", { style: { color: "#8F9500" } },
+                    "\u2B50 Valoraci\u00F3n del XI: ",
+                    avgValoracion(jugadoresXi).toFixed(1)),
+                seleccionadosXi.length > 0 && React.createElement(ExportarXiBoton, { xi: { ...xi, suplentes: suplentes }, formacion: formacion, jornadaNumero: jn, players: players, teams: teams, statsMap: elegiblesMap }))),
+        !elegiblesIds.size && React.createElement("div", { className: "card2 p-4 text-center text-zinc-500 text-xs" }, "Todav\u00EDa no hay partidos jugados en esta jornada (con al menos 5 minutos por jugador)."),
+        React.createElement(FormacionField, { lineasRoles: lineasRoles, filas: xi.filas, renderSlot: renderSlotEditable, renderPT: renderPTEditable }),
+        React.createElement("div", { className: "rounded-2xl", style: { background: "linear-gradient(180deg,#1c1d22,#0e0f12)", border: "1px solid #2c2c30", padding: "14px 12px" } },
+            React.createElement("div", { className: "text-white text-[10px] font-bold uppercase tracking-wide mb-2 opacity-70 text-center" }, "Suplentes"),
+            React.createElement("div", { className: "flex flex-wrap gap-2 justify-center" }, suplentes.map((id, i) => renderSuplente(i, id)))),
+        jugadoresXi.length > 0 && React.createElement("div", { className: "card2" },
+            React.createElement("div", { className: "section-header px-4 py-2.5" }, "Titulares elegidos (stats de esta jornada)"),
+            React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresXi.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: elegiblesMap, vecesXi: vecesXi })))),
+        jugadoresSup.length > 0 && React.createElement("div", { className: "card2" },
+            React.createElement("div", { className: "section-header px-4 py-2.5" }, "Suplentes elegidos (stats de esta jornada)"),
+            React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresSup.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: elegiblesMap, vecesXi: vecesXi }))))));
+}
+// ---------- XI Ideal del Torneo (manual, independiente por período) ----------
+// A diferencia del XI de la Jornada (uno por cada jornada jugada), acá hay 4 XI totalmente autónomos entre sí:
+// "Torneo completo", "Apertura", "Clausura" y "Liguilla". Cada uno se arma a mano, se guarda por separado en
+// xiTorneo[periodo.id] y no se recalcula ni se mezcla con los demás. Solo se ofrecen como jugadores elegibles
+// los que sumaron minutos dentro de las jornadas de ese período, para que el rango de comparación tenga sentido.
+function XiIdealTorneo({ fases, todasLasJornadas, teams, players, vecesXi, xiTorneo, setXiTorneo }) {
+    const [periodo, setPeriodo] = usePersistedState("xiIdealTorneoPeriodo", "torneo");
+    const formacionDefault = "4-3-3";
+    const PERIODOS = [
+        { id: "torneo", label: "Torneo completo", jornadas: todasLasJornadas },
+        { id: "apertura", label: "Apertura", jornadas: fases.apertura },
+        { id: "clausura", label: "Clausura", jornadas: fases.clausura },
+        { id: "liguilla", label: "Liguilla", jornadas: fases.liguilla },
+    ];
+    const activo = PERIODOS.find((p) => p.id === periodo) || PERIODOS[0];
+    const jornadasPeriodo = activo.jornadas || [];
+    const statsMap = useMemo(() => statsPorPeriodo(jornadasPeriodo), [jornadasPeriodo]);
+    const elegiblesIds = new Set(statsMap.keys());
+    const suplentesVacio = [null, null, null, null, null];
+    const filasVacias = (nombreFormacion) => (FORMACIONES_XI[nombreFormacion] || FORMACIONES_XI[formacionDefault]).lineas.map((roles) => roles.map(() => null));
+    const xiVacio = { formacion: formacionDefault, PT: null, filas: filasVacias(formacionDefault), suplentes: suplentesVacio };
+    const xiGuardado = xiTorneo && xiTorneo[periodo];
+    // Compatibilidad: si el período nunca se armó, o quedó con una formación que ya no existe, se arranca vacío.
+    const xi = xiGuardado && xiGuardado.filas && FORMACIONES_XI[xiGuardado.formacion] ? xiGuardado : xiVacio;
+    const formacion = xi.formacion || formacionDefault;
+    const lineasRoles = (FORMACIONES_XI[formacion] || FORMACIONES_XI[formacionDefault]).lineas;
+    const suplentes = xi.suplentes && xi.suplentes.length === 5 ? xi.suplentes : suplentesVacio;
+    const updateXi = (nuevo) => setXiTorneo((prev) => ({ ...(prev || {}), [periodo]: nuevo }));
+    const seleccionadosXi = [xi.PT, ...xi.filas.flat()].filter(Boolean);
+    const seleccionadosSup = suplentes.filter(Boolean);
+    const seleccionados = [...seleccionadosXi, ...seleccionadosSup];
+    const setSlot = (grupo, li, si, jugadorId) => {
+        if (grupo === "PT") {
+            updateXi({ ...xi, PT: jugadorId });
+        }
+        else if (grupo === "SUP") {
+            const arr = [...suplentes];
+            arr[si] = jugadorId;
+            updateXi({ ...xi, suplentes: arr });
+        }
+        else {
+            const filas = xi.filas.map((fila, i) => i !== li ? fila : fila.map((v, j) => j === si ? jugadorId : v));
+            updateXi({ ...xi, filas: filas });
+        }
+    };
+    const cambiarFormacion = (nombreFormacion) => {
+        const nuevasLineas = FORMACIONES_XI[nombreFormacion].lineas;
+        const idsPlanos = xi.filas.flat().filter(Boolean);
+        let cursor = 0;
+        const nuevasFilas = nuevasLineas.map((roles) => roles.map(() => idsPlanos[cursor++] || null));
+        updateXi({ ...xi, formacion: nombreFormacion, filas: nuevasFilas });
+    };
+    const autoArmar = () => {
+        if (!confirm(`Esto arma autom\u00E1ticamente el XI de "${activo.label}" con los mejores promedios y reemplaza la selecci\u00F3n manual actual de ese per\u00EDodo. Despu\u00E9s pod\u00E9s seguir edit\u00E1ndolo a mano. \u00BFContinuar?`))
+            return;
+        updateXi(armarXiAutomatico(players, statsMap, formacion));
+    };
+    const limpiarXi = () => {
+        if (!confirm(`\u00BFVaciar por completo el XI Ideal de "${activo.label}"?`))
+            return;
+        updateXi(xiVacio);
+    };
+    const jugadoresXi = players.filter((p) => seleccionadosXi.includes(p.id));
+    const jugadoresSup = players.filter((p) => seleccionadosSup.includes(p.id));
+    const renderSlotEditable = (li, si, id, role) => React.createElement(SlotPicker, { key: `${li}-${si}`, jugadorId: id, disabledIds: seleccionados, players: players, teams: teams, elegiblesIds: elegiblesIds, statsMap: statsMap, placeholder: role, role: role, onPick: (v) => setSlot("LINEA", li, si, v) });
+    const renderPTEditable = () => React.createElement(SlotPicker, { jugadorId: xi.PT, disabledIds: seleccionados, players: players, teams: teams, elegiblesIds: elegiblesIds, statsMap: statsMap, placeholder: "PT", role: "PT", onPick: (v) => setSlot("PT", 0, 0, v) });
+    const renderSuplente = (idx, id) => React.createElement(SlotPicker, { key: `SUP-${idx}`, jugadorId: id, disabledIds: seleccionados, players: players, teams: teams, elegiblesIds: elegiblesIds, statsMap: statsMap, placeholder: "Suplente", onPick: (v) => setSlot("SUP", 0, idx, v) });
+    const sinPartidos = jornadasPeriodo.every((j) => !j.partidos || !j.partidos.some((p) => p.jugado));
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+            React.createElement("h2", { className: "text-lg font-black" }, "\uD83C\uDFC6 XI Ideal del Torneo"),
+            React.createElement("select", { value: formacion, onChange: (e) => cambiarFormacion(e.target.value) }, Object.keys(FORMACIONES_XI).map((f) => React.createElement("option", { key: f, value: f }, f)))),
+        React.createElement("div", { className: "tabs-even" }, PERIODOS.map((p) => React.createElement("button", { key: p.id, type: "button", disabled: p.id === "liguilla" && !fases.liguilla.length, onClick: () => setPeriodo(p.id), className: "text-xs font-bold px-3 py-1.5 rounded-full disabled:opacity-40", style: periodo === p.id ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, p.label))),
+        React.createElement("p", { className: "text-xs text-zinc-500" }, "Cada per\u00EDodo (Torneo completo, Apertura, Clausura y Liguilla) tiene su propio XI Ideal, completamente independiente de los dem\u00E1s: eleg\u00EDlo a mano tocando cada espacio, entre los jugadores que sumaron minutos en ese per\u00EDodo. \"Auto-armar\" es solo un punto de partida opcional (mejores promedios) que despu\u00E9s pod\u00E9s seguir ajustando manualmente."),
+        sinPartidos ? React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay partidos jugados en ", activo.label, ".") : (React.createElement(React.Fragment, null,
+            React.createElement("div", { className: "card2 p-3 flex items-center justify-between flex-wrap gap-2 text-xs font-semibold text-zinc-500" },
+                React.createElement("span", null,
+                    seleccionadosXi.length,
+                    "/11 titulares \u00B7 ",
+                    seleccionadosSup.length,
+                    "/5 suplentes \u00B7 ",
+                    elegiblesIds.size,
+                    " jugadores con minutos en ",
+                    activo.label),
+                React.createElement("div", { className: "flex items-center gap-2" },
+                    seleccionadosXi.length > 0 && React.createElement("span", { style: { color: "#8F9500" } },
+                        "\u2B50 Valoraci\u00F3n del XI: ",
+                        avgValoracion(jugadoresXi).toFixed(1)),
+                    React.createElement("button", { type: "button", onClick: autoArmar, className: "text-[10px] font-bold px-2 py-1 rounded-full bg-zinc-100 hover:bg-zinc-200" }, "\u26A1 Auto-armar"),
+                    (seleccionadosXi.length > 0 || seleccionadosSup.length > 0) && React.createElement("button", { type: "button", onClick: limpiarXi, className: "text-[10px] font-bold px-2 py-1 rounded-full bg-zinc-100 hover:bg-zinc-200" }, "\uD83E\uDDF9 Vaciar"),
+                    seleccionadosXi.length > 0 && React.createElement(ExportarXiBoton, { xi: { ...xi, suplentes: suplentes }, formacion: formacion, titulo: `Torneo \u2014 ${activo.label}`, players: players, teams: teams, statsMap: statsMap }))),
+            React.createElement(FormacionField, { lineasRoles: lineasRoles, filas: xi.filas, renderSlot: renderSlotEditable, renderPT: renderPTEditable }),
+            React.createElement("div", { className: "rounded-2xl", style: { background: "linear-gradient(180deg,#1c1d22,#0e0f12)", border: "1px solid #2c2c30", padding: "14px 12px" } },
+                React.createElement("div", { className: "text-white text-[10px] font-bold uppercase tracking-wide mb-2 opacity-70 text-center" }, "Suplentes"),
+                React.createElement("div", { className: "flex flex-wrap gap-2 justify-center" }, suplentes.map((id, i) => renderSuplente(i, id)))),
+            jugadoresXi.length > 0 && React.createElement("div", { className: "card2" },
+                React.createElement("div", { className: "section-header px-4 py-2.5" }, `Titulares (stats acumuladas \u2014 ${activo.label})`),
+                React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresXi.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: statsMap, vecesXi: vecesXi })))),
+            jugadoresSup.length > 0 && React.createElement("div", { className: "card2" },
+                React.createElement("div", { className: "section-header px-4 py-2.5" }, `Suplentes (stats acumuladas \u2014 ${activo.label})`),
+                React.createElement("div", { className: "divide-y divide-zinc-100" }, jugadoresSup.map((p) => React.createElement(FilaStatsJugadorJornada, { key: p.id, p: p, teams: teams, statsMap: statsMap, vecesXi: vecesXi }))))))));
+}
+// ---------- Premios de Fin de Temporada ----------
+// Tarjeta de un premio individual (Bota de Oro / Máximo Asistente / Guante de Oro). Al tocarla abre el
+// detalle de stats del jugador (mismo modal que usan las tarjetas de Destacados en General).
+function PremioCard({ icon, titulo, jugador, valor, subLabel, equipoNombre, onClick }) {
+    return React.createElement("div", { className: "wide-card wide-card-clickable", onClick: onClick, role: "button", tabIndex: 0 },
+        React.createElement("div", { className: "wide-card-media" }, jugador && jugador.foto ? React.createElement("img", { src: jugador.foto }) : React.createElement(Icon, { size: 26 }, icon)),
+        React.createElement("div", { className: "wide-card-body" },
+            React.createElement("div", { className: "wide-card-label" }, titulo),
+            React.createElement("div", { className: "wide-card-value" }, jugador ? jugador.nombre : "Sin ganador todav\u00EDa"),
+            jugador && React.createElement("div", { className: "wide-card-sub" }, `${valor} ${subLabel} \u00B7 ${equipoNombre}`)));
+}
+// Vista + modal de cierre de torneo: muestra automáticamente, para el período elegido (Torneo completo,
+// Apertura, Clausura o Liguilla), los tres premios individuales calculados en base a las estadísticas de ese
+// período únicamente (no acumulado histórico del jugador): Bota de Oro (goles), Máximo Asistente (asistencias)
+// y Guante de Oro (más vallas invictas entre los arqueros con minutos jugados).
+function PremiosView({ fases, todasLasJornadas, teams, players }) {
+    const [periodo, setPeriodo] = usePersistedState("premiosPeriodo", "torneo");
+    const [detalle, setDetalle] = useState(null);
+    const nombreEquipoDe = (p) => { var _a; return ((_a = teams.find((t) => t.id === p.equipoId)) === null || _a === void 0 ? void 0 : _a.nombre) || "Sin equipo"; };
+    const PERIODOS = [
+        { id: "torneo", label: "Torneo completo", jornadas: todasLasJornadas },
+        { id: "apertura", label: "Apertura", jornadas: fases.apertura },
+        { id: "clausura", label: "Clausura", jornadas: fases.clausura },
+        { id: "liguilla", label: "Liguilla", jornadas: fases.liguilla },
+    ];
+    const activo = PERIODOS.find((p) => p.id === periodo) || PERIODOS[0];
+    const jornadasPeriodo = activo.jornadas || [];
+    const terminado = faseCompleta(jornadasPeriodo);
+    const statsMap = useMemo(() => statsPorPeriodo(jornadasPeriodo), [jornadasPeriodo]);
+    const vallas = useMemo(() => vallasInvictasPorPeriodo(jornadasPeriodo, players), [jornadasPeriodo, players]);
+    const sinPartidos = jornadasPeriodo.every((j) => !j.partidos || !j.partidos.some((p) => p.jugado));
+    const conStats = (campo) => [...statsMap.entries()].filter(([, s]) => s[campo] > 0).sort((a, b) => b[1][campo] - a[1][campo] || b[1].score - a[1].score);
+    const goleadorEntry = conStats("goles")[0];
+    const asistenteEntry = conStats("asistencias")[0];
+    const guanteEntry = [...vallas.entries()].filter(([id]) => { var _a; return ((_a = players.find((p) => p.id === id)) === null || _a === void 0 ? void 0 : _a.posicion) === "PT"; }).sort((a, b) => b[1] - a[1] || (statsMap.get(b[0]) ? statsMap.get(b[0]).score : 0) - (statsMap.get(a[0]) ? statsMap.get(a[0]).score : 0))[0];
+    const jugadorDe = (id) => players.find((p) => p.id === id);
+    const goleador = goleadorEntry ? jugadorDe(goleadorEntry[0]) : null;
+    const asistente = asistenteEntry ? jugadorDe(asistenteEntry[0]) : null;
+    const guante = guanteEntry ? jugadorDe(guanteEntry[0]) : null;
+    const verDetalle = (jugador) => jugador && setDetalle({ tipo: "jugador", titulo: jugador.nombre, jugador, equipoNombre: nombreEquipoDe(jugador) });
+    return (React.createElement("div", { className: "space-y-3" },
+        detalle && React.createElement(DetalleDashboardSheet, { detalle: detalle, onClose: () => setDetalle(null) }),
+        React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+            React.createElement("h2", { className: "text-lg font-black" }, "\uD83C\uDFC5 Premios de Fin de Temporada"),
+            !sinPartidos && React.createElement("span", { className: "text-[10px] font-bold px-2 py-1 rounded-full", style: terminado ? { background: "#DFF3E1", color: "#1E8E3E" } : { background: "#FEF3C7", color: "#92400E" } }, terminado ? "\u2705 Torneo cerrado" : "\u23F3 En curso (parcial)")),
+        React.createElement("div", { className: "tabs-even" }, PERIODOS.map((p) => React.createElement("button", { key: p.id, type: "button", disabled: p.id === "liguilla" && !fases.liguilla.length, onClick: () => setPeriodo(p.id), className: "text-xs font-bold px-3 py-1.5 rounded-full disabled:opacity-40", style: periodo === p.id ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, p.label))),
+        React.createElement("p", { className: "text-xs text-zinc-500" }, "Se calculan solo con las estad\u00EDsticas de ", activo.label, " (no con el acumulado hist\u00F3rico del jugador). Si el torneo todav\u00EDa est\u00E1 en curso, se muestran los l\u00EDderes parciales hasta el momento."),
+        sinPartidos ? React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay partidos jugados en ", activo.label, ".") : React.createElement("div", { className: "space-y-2" },
+            React.createElement(PremioCard, { icon: "\uD83E\uDD47", titulo: "Bota de Oro (Goles)", jugador: goleador, valor: goleadorEntry ? goleadorEntry[1].goles : 0, subLabel: "goles", equipoNombre: goleador && nombreEquipoDe(goleador), onClick: () => verDetalle(goleador) }),
+            React.createElement(PremioCard, { icon: "\uD83C\uDFAF", titulo: "M\u00E1ximo Asistente", jugador: asistente, valor: asistenteEntry ? asistenteEntry[1].asistencias : 0, subLabel: "asistencias", equipoNombre: asistente && nombreEquipoDe(asistente), onClick: () => verDetalle(asistente) }),
+            React.createElement(PremioCard, { icon: "\uD83E\uDDE4", titulo: "Guante de Oro (Vallas invictas)", jugador: guante, valor: guanteEntry ? guanteEntry[1] : 0, subLabel: "vallas invictas", equipoNombre: guante && nombreEquipoDe(guante), onClick: () => verDetalle(guante) }))));
+}
+// ---------- Rankings ----------
+function TablaRanking({ titulo, icon, rows, allRows, cols, teamName, extra }) {
+    const [showAll, setShowAll] = useState(false);
+    const data = showAll ? allRows : rows;
+    return (React.createElement("div", { className: "card2" },
+        React.createElement("div", { className: "section-header px-4 py-2.5 flex items-center justify-between gap-2" },
+            React.createElement("span", { className: "flex items-center gap-2" },
+                icon,
+                " ",
+                titulo),
+            allRows.length > rows.length && React.createElement("button", { type: "button", onClick: () => setShowAll(!showAll), className: "text-[10px] font-bold px-2 py-1 rounded-full bg-white/20 hover:bg-white/30" }, showAll ? "Ver top 15" : `Ver todos (${allRows.length})`)),
+        React.createElement("table", { className: "text-xs w-full" },
+            React.createElement("tbody", null,
+                data.map((p, i) => (React.createElement("tr", { key: p.id, className: "row-line" },
+                    React.createElement("td", { className: "pl-4 py-1.5 w-5 text-zinc-400" }, i + 1),
+                    React.createElement("td", { className: "py-1.5 pr-2" }, p.foto ? React.createElement("img", { src: p.foto, className: "w-10 h-10 rounded-full object-cover" }) : React.createElement("div", { className: "avatar-ph w-10 h-10 rounded-full text-xs font-bold" }, p.dorsal)),
+                    React.createElement("td", { className: "py-1.5" },
+                        React.createElement("div", null,
+                            p.nombre,
+                            " ",
+                            React.createElement("span", { className: "text-zinc-400" },
+                                "(",
+                                teamName(p.equipoId),
+                                ")")),
+                        React.createElement("div", { className: "text-[10px] text-zinc-400" },
+                            "#",
+                            p.dorsal,
+                            " \u00B7 ",
+                            p.posicion,
+                            " \u00B7 GRL ",
+                            valoracionEfectiva(p).toFixed(0),
+                            extra ? ` \u00B7 ${extra(p)}` : "")),
+                    React.createElement("td", { className: "pr-4 py-1.5 text-right font-black text-[#8F9500]" }, cols(p))))),
+                !data.length && React.createElement("tr", null,
+                    React.createElement("td", { className: "text-zinc-500 py-3 px-4" }, "Sin datos a\u00FAn."))))));
+}
+// Tabla de equipos para Rankings: goles a favor/en contra, diferencia, puntos y score promedio del plantel.
+// Tabla de ranking de equipos: mismo layout que TablaRanking (foto/escudo + nombre + valor a la derecha)
+// pero para equipos en vez de jugadores.
+function TablaRankingEquipos({ titulo, icon, rows, allRows, cols, extra }) {
+    const [showAll, setShowAll] = useState(false);
+    const data = showAll ? allRows : rows;
+    return (React.createElement("div", { className: "card2" },
+        React.createElement("div", { className: "section-header px-4 py-2.5 flex items-center justify-between gap-2" },
+            React.createElement("span", { className: "flex items-center gap-2" },
+                icon,
+                " ",
+                titulo),
+            allRows.length > rows.length && React.createElement("button", { type: "button", onClick: () => setShowAll(!showAll), className: "text-[10px] font-bold px-2 py-1 rounded-full bg-white/20 hover:bg-white/30" }, showAll ? "Ver top 10" : `Ver todos (${allRows.length})`)),
+        React.createElement("table", { className: "text-xs w-full" },
+            React.createElement("tbody", null,
+                data.map((t, i) => (React.createElement("tr", { key: t.id, className: "row-line" },
+                    React.createElement("td", { className: "pl-4 py-1.5 w-5 text-zinc-400" }, i + 1),
+                    React.createElement("td", { className: "py-1.5 pr-2" }, t.escudo ? React.createElement("img", { src: t.escudo, className: "w-10 h-10 rounded-lg object-cover" }) : React.createElement("div", { className: "avatar-ph w-10 h-10 rounded-lg text-xs font-bold" }, (t.nombre || "?").slice(0, 1))),
+                    React.createElement("td", { className: "py-1.5" },
+                        React.createElement("div", { className: "font-semibold" }, t.nombre),
+                        extra && React.createElement("div", { className: "text-[10px] text-zinc-400" }, extra(t))),
+                    React.createElement("td", { className: "pr-4 py-1.5 text-right font-black text-[#8F9500]" }, cols(t))))),
+                !data.length && React.createElement("tr", null,
+                    React.createElement("td", { colSpan: 4, className: "text-zinc-500 py-3 px-4" }, "Sin datos aún.")))))); 
+}
+// Subsección "Equipos" de Rankings: cuatro tablas separadas (goles anotados, goles recibidos, score, valor de mercado).
+function RankingEquipos({ teams, jornadas, players }) {
+    const tabla = calcularTabla(teams, jornadas);
+    const porNombre = (a, b) => (a.nombre || "").localeCompare(b.nombre || "");
+    const scoreEquipo = (teamId) => {
+        const ps = players.filter((p) => p.equipoId === teamId && p.scores && p.scores.length);
+        return ps.length ? avg(ps.map((p) => avg(p.scores))) : null;
+    };
+    const valorEquipo = (teamId) => players.filter((p) => p.equipoId === teamId).reduce((a, p) => a + (p.valorMercado || 0), 0);
+    const jugados = tabla.filter((t) => t.pj > 0);
+    const goleadoresAll = [...jugados].sort((a, b) => b.gf - a.gf || a.gc - b.gc || porNombre(a, b));
+    const recibidosAll = [...jugados].sort((a, b) => a.gc - b.gc || b.gf - a.gf || porNombre(a, b));
+    const scoreAll = tabla.map((t) => ({ ...t, score: scoreEquipo(t.id) })).filter((t) => t.score != null).sort((a, b) => b.score - a.score || porNombre(a, b));
+    const valorAll = tabla.map((t) => ({ ...t, valor: valorEquipo(t.id) })).filter((t) => t.valor > 0).sort((a, b) => b.valor - a.valor || porNombre(a, b));
+    return (React.createElement("div", { className: "grid md:grid-cols-2 gap-3" },
+        React.createElement(TablaRankingEquipos, { titulo: "Goles anotados", icon: "\u26BD", rows: goleadoresAll.slice(0, 10), allRows: goleadoresAll, cols: (t) => t.gf, extra: (t) => `${t.pj} PJ` }),
+        React.createElement(TablaRankingEquipos, { titulo: "Goles recibidos", icon: "\uD83E\uDDE4", rows: recibidosAll.slice(0, 10), allRows: recibidosAll, cols: (t) => t.gc, extra: (t) => `${t.pj} PJ` }),
+        React.createElement(TablaRankingEquipos, { titulo: "Score", icon: "\u2B50", rows: scoreAll.slice(0, 10), allRows: scoreAll, cols: (t) => t.score.toFixed(1) }),
+        React.createElement(TablaRankingEquipos, { titulo: "Valor de mercado", icon: "\uD83D\uDCB0", rows: valorAll.slice(0, 10), allRows: valorAll, cols: (t) => fmtMoney(t.valor) })));
+}
+function Rankings({ players, teams, jornadas }) {
+    const [subTab, setSubTab] = usePersistedState("rankingsSubTab", "equipos");
+    const teamName = (id) => { var _a; return ((_a = teams.find((t) => t.id === id)) === null || _a === void 0 ? void 0 : _a.nombre) || "—"; };
+    const porEquipo = (a, b) => teamName(a.equipoId).localeCompare(teamName(b.equipoId));
+    // Regla E: empates en Rankings (no-score) se resuelven por Partidos Jugados, luego Minutos, luego Equipo.
+    const tbRanking = (a, b) => (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b);
+    // Regla D: empates en SCORE se resuelven por Goles, Asistencias, Partidos Jugados, Minutos, Equipo.
+    const tbScore = (a, b) => (b.goles || 0) - (a.goles || 0) || (b.asistencias || 0) - (a.asistencias || 0) || (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b);
+    const goleadoresAll = [...players].filter((p) => p.goles > 0).sort((a, b) => b.goles - a.goles || tbRanking(a, b));
+    const asistidoresAll = [...players].filter((p) => p.asistencias > 0).sort((a, b) => b.asistencias - a.asistencias || tbRanking(a, b));
+    // Regla G+A: participación directa en gol. Empates por goles, luego asistencias, luego el resto de la Regla E.
+    const gaAll = [...players].filter((p) => (p.goles || 0) + (p.asistencias || 0) > 0).sort((a, b) => ((b.goles || 0) + (b.asistencias || 0)) - ((a.goles || 0) + (a.asistencias || 0)) || (b.goles || 0) - (a.goles || 0) || tbRanking(a, b));
+    const golesRecibidosAll = [...players].filter((p) => p.posicion === "PT" && p.partidosJugados > 0).sort((a, b) => (a.golesRecibidos || 0) - (b.golesRecibidos || 0) || tbRanking(a, b));
+    const scoreTopAll = [...players].filter((p) => p.scores.length > 0).sort((a, b) => avg(b.scores) - avg(a.scores) || tbScore(a, b));
+    const masMvpsAll = [...players].filter((p) => (p.mvps || 0) > 0).sort((a, b) => (b.mvps || 0) - (a.mvps || 0) || tbRanking(a, b));
+    const masCarosAll = [...players].filter((p) => p.valorMercado > 0).sort((a, b) => b.valorMercado - a.valorMercado || tbRanking(a, b));
+    const goleadores = goleadoresAll.slice(0, 15);
+    const asistidores = asistidoresAll.slice(0, 15);
+    const ga = gaAll.slice(0, 15);
+    const golesRecibidos = golesRecibidosAll.slice(0, 15);
+    const scoreTop = scoreTopAll.slice(0, 15);
+    const masMvps = masMvpsAll.slice(0, 15);
+    const masCaros = masCarosAll.slice(0, 15);
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("h2", { className: "text-lg font-black" }, "Rankings del torneo"),
+        React.createElement("div", { className: "tabs-even" }, [["equipos", "\uD83C\uDFDF\uFE0F Equipos"], ["jugadores", "\uD83E\uDDCD Jugadores"]].map(([val, label]) => React.createElement("button", { key: val, type: "button", onClick: () => setSubTab(val), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: subTab === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label))),
+        subTab === "equipos" && React.createElement(RankingEquipos, { teams: teams, jornadas: jornadas || [], players: players }),
+        subTab === "jugadores" && React.createElement("div", { className: "grid md:grid-cols-2 gap-3" },
+            React.createElement(TablaRanking, { titulo: "Goleadores", icon: "\uD83C\uDFC6", rows: goleadores, allRows: goleadoresAll, cols: (p) => p.goles, teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Asistidores", icon: "\u2B50", rows: asistidores, allRows: asistidoresAll, cols: (p) => p.asistencias, teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Goles + Asistencias", icon: "\uD83D\uDD25", rows: ga, allRows: gaAll, cols: (p) => (p.goles || 0) + (p.asistencias || 0), extra: (p) => `\u26BD${p.goles || 0} \u00B7 \uD83C\uDD70\uFE0F${p.asistencias || 0}`, teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Menos goles recibidos (porteros)", icon: "\uD83E\uDDE4", rows: golesRecibidos, allRows: golesRecibidosAll, cols: (p) => p.golesRecibidos || 0, teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Mejor score promedio", icon: "\u2B50", rows: scoreTop, allRows: scoreTopAll, cols: (p) => avg(p.scores).toFixed(1), teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "M\u00E1s MVPs", icon: "\uD83C\uDFC5", rows: masMvps, allRows: masMvpsAll, cols: (p) => p.mvps || 0, teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Los m\u00E1s caros", icon: "\uD83D\uDCB0", rows: masCaros, allRows: masCarosAll, cols: (p) => fmtMoney(p.valorMercado), teamName: teamName }))));
+}
+// ---------- Estadísticas ----------
+function Estadisticas({ players, teams }) {
+    const teamName = (id) => { var _a; return ((_a = teams.find((t) => t.id === id)) === null || _a === void 0 ? void 0 : _a.nombre) || "—"; };
+    const porEquipo = (a, b) => teamName(a.equipoId).localeCompare(teamName(b.equipoId));
+    // Regla D: empates en SCORE (usada por las 4 categorías de posición) -> Goles, Asistencias, PJ, Minutos, Equipo.
+    const tbScore = (a, b) => (b.goles || 0) - (a.goles || 0) || (b.asistencias || 0) - (a.asistencias || 0) || (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b);
+    const cardsPeso = (p) => (p.amarillas || 0) + (p.rojas || 0) * 3;
+    const jugadosAll = [...players].filter((p) => (p.partidosJugados || 0) > 0).sort((a, b) => b.partidosJugados - a.partidosJugados || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b));
+    const minutosAll = [...players].filter((p) => (p.minutosJugados || 0) > 0).sort((a, b) => b.minutosJugados - a.minutosJugados || (b.partidosJugados || 0) - (a.partidosJugados || 0) || porEquipo(a, b));
+    const fairplayAll = [...players].filter((p) => (p.partidosJugados || 0) > 0).sort((a, b) => cardsPeso(a) - cardsPeso(b) || (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b));
+    const porGrupo = (grupo) => [...players].filter((p) => POSICION_GRUPO(p.posicion) === grupo && p.scores.length > 0).sort((a, b) => avg(b.scores) - avg(a.scores) || tbScore(a, b));
+    const delanterosAll = porGrupo("Delantero");
+    const mediocampistasAll = porGrupo("Mediocampista");
+    const defensasAll = porGrupo("Defensor");
+    const porterosAll = porGrupo("Portero");
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("h2", { className: "text-lg font-black" }, "\uD83D\uDCC8 Estad\u00EDsticas del torneo"),
+        React.createElement("div", { className: "grid md:grid-cols-2 gap-3" },
+            React.createElement(TablaRanking, { titulo: "M\u00E1s partidos jugados", icon: "\uD83E\uDDBF", rows: jugadosAll.slice(0, 15), allRows: jugadosAll, cols: (p) => p.partidosJugados, teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "M\u00E1s minutos jugados", icon: "\u23F1\uFE0F", rows: minutosAll.slice(0, 15), allRows: minutosAll, cols: (p) => p.minutosJugados, teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Fair Play (menos tarjetas)", icon: "\uD83E\uDEAA", rows: fairplayAll.slice(0, 15), allRows: fairplayAll, cols: (p) => `${p.amarillas || 0}\uD83D\uDFE8 ${p.rojas || 0}\uD83D\uDFE5`, teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Mejores delanteros (por score)", icon: "\u26BD", rows: delanterosAll.slice(0, 15), allRows: delanterosAll, cols: (p) => avg(p.scores).toFixed(1), teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Mejores mediocampistas (por score)", icon: "\uD83C\uDFAF", rows: mediocampistasAll.slice(0, 15), allRows: mediocampistasAll, cols: (p) => avg(p.scores).toFixed(1), teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Mejores defensas (por score)", icon: "\uD83E\uDEE7", rows: defensasAll.slice(0, 15), allRows: defensasAll, cols: (p) => avg(p.scores).toFixed(1), teamName: teamName }),
+            React.createElement(TablaRanking, { titulo: "Mejores porteros (por score)", icon: "\uD83E\uDDE4", rows: porterosAll.slice(0, 15), allRows: porterosAll, cols: (p) => avg(p.scores).toFixed(1), teamName: teamName }))));
+}
+// ---------- Sanciones ----------
+function Sanciones({ players, setPlayers, teams }) {
+    const teamName = (id) => { var _a; return ((_a = teams.find((t) => t.id === id)) === null || _a === void 0 ? void 0 : _a.nombre) || "—"; };
+    const sancionados = players.filter((p) => p.amarillas > 0 || p.rojas > 0 || p.sancionJornadas > 0).sort((a, b) => b.sancionJornadas - a.sancionJornadas || b.rojas - a.rojas || b.amarillas - a.amarillas);
+    const lesionados = players.filter((p) => (p.jornadasLesionado || 0) > 0).sort((a, b) => (b.jornadasLesionado || 0) - (a.jornadasLesionado || 0));
+    const cumplir = (id) => setPlayers(players.map((p) => p.id === id ? { ...p, sancionJornadas: Math.max(0, p.sancionJornadas - 1) } : p));
+    const altaMedica = (id) => setPlayers(players.map((p) => p.id === id ? { ...p, jornadasLesionado: Math.max(0, (p.jornadasLesionado || 0) - 1) } : p));
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("h2", { className: "text-lg font-black flex items-center gap-2" }, "\uD83D\uDEAB Sanciones y disciplina"),
+        React.createElement("div", { className: "card2 overflow-x-auto" },
+            React.createElement("table", { className: "text-sm table-responsive" },
+                React.createElement("thead", { className: "text-zinc-500 text-xs row-line" },
+                    React.createElement("tr", null,
+                        React.createElement("th", { className: "text-left pl-4" }, "Jugador"),
+                        React.createElement("th", null, "Equipo"),
+                        React.createElement("th", null, "\uD83D\uDFE8"),
+                        React.createElement("th", null, "\uD83D\uDFE5"),
+                        React.createElement("th", null, "Sanci\u00F3n restante"),
+                        React.createElement("th", null))),
+                React.createElement("tbody", null,
+                    sancionados.map((p) => (React.createElement("tr", { key: p.id, className: "row-line" },
+                        React.createElement("td", { className: "py-2 pl-4", "data-label": "Jugador" }, p.nombre),
+                        React.createElement("td", { className: "text-center text-zinc-500", "data-label": "Equipo" }, teamName(p.equipoId)),
+                        React.createElement("td", { className: "text-center", "data-label": "\uD83D\uDFE8 Amarillas" }, p.amarillas),
+                        React.createElement("td", { className: "text-center", "data-label": "\uD83D\uDFE5 Rojas" }, p.rojas),
+                        React.createElement("td", { className: "text-center", "data-label": "Sanci\u00F3n restante" }, p.sancionJornadas > 0 ? React.createElement("span", { className: "text-red-500 font-black" }, p.sancionJornadas) : React.createElement("span", { className: "text-zinc-300" }, "0")),
+                        React.createElement("td", { className: "text-center pr-4" }, p.sancionJornadas > 0 && React.createElement("button", { onClick: () => cumplir(p.id), className: "text-xs px-2 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200" }, "Cumplir jornada"))))),
+                    !sancionados.length && React.createElement("tr", null,
+                        React.createElement("td", { colSpan: 6, className: "text-center text-zinc-500 py-8" }, "Sin sanciones registradas."))))),
+        React.createElement("h2", { className: "text-lg font-black flex items-center gap-2" }, "\uD83D\uDE91 Lesionados"),
+        React.createElement("div", { className: "card2 overflow-x-auto" },
+            React.createElement("table", { className: "text-sm table-responsive" },
+                React.createElement("thead", { className: "text-zinc-500 text-xs row-line" },
+                    React.createElement("tr", null,
+                        React.createElement("th", { className: "text-left pl-4" }, "Jugador"),
+                        React.createElement("th", null, "Equipo"),
+                        React.createElement("th", null, "Jornadas restantes"),
+                        React.createElement("th", null))),
+                React.createElement("tbody", null,
+                    lesionados.map((p) => (React.createElement("tr", { key: p.id, className: "row-line" },
+                        React.createElement("td", { className: "py-2 pl-4", "data-label": "Jugador" }, p.nombre),
+                        React.createElement("td", { className: "text-center text-zinc-500", "data-label": "Equipo" }, teamName(p.equipoId)),
+                        React.createElement("td", { className: "text-center", "data-label": "Jornadas restantes" }, React.createElement("span", { className: "text-red-500 font-black" }, p.jornadasLesionado)),
+                        React.createElement("td", { className: "text-center pr-4" }, React.createElement("button", { onClick: () => altaMedica(p.id), className: "text-xs px-2 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200" }, "Alta m\u00E9dica (\u22121 jornada)"))))),
+                    !lesionados.length && React.createElement("tr", null,
+                        React.createElement("td", { colSpan: 4, className: "text-center text-zinc-500 py-8" }, "Sin lesiones registradas.")))))));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(TorneoApp, null));
+
