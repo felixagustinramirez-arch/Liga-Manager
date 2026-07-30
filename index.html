@@ -1512,6 +1512,61 @@ function saveData(data) {
 // Borrador de "Jugar partido" en curso (aún sin confirmar): se guarda aparte para que sobreviva a
 // cambios de pestaña/sección e incluso a cerrar y volver a abrir la página, hasta que se confirme o descarte.
 const STORAGE_KEY_DRAFT = STORAGE_KEY + "-draft-partido";
+// ---------- Backups automáticos rotativos (red de seguridad local) ----------
+// Guardan una copia del estado al abrir la app (antes de que se toque nada en la sesión).
+// Se mantiene como máximo 1 backup por día, hasta MAX_BACKUPS_AUTO días. Esto NO reemplaza
+// exportar el .json real (localStorage puede borrarse junto con los datos del sitio), pero
+// protege contra bugs o errores humanos dentro de una misma sesión/dispositivo.
+const STORAGE_KEY_BACKUPS = STORAGE_KEY + "-backups-auto";
+const STORAGE_KEY_ULTIMO_EXPORT = STORAGE_KEY + "-ultimo-export";
+const MAX_BACKUPS_AUTO = 7;
+function loadBackupsAuto() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY_BACKUPS);
+        return raw ? JSON.parse(raw) : [];
+    }
+    catch (e) {
+        return [];
+    }
+}
+function guardarBackupAuto(data) {
+    try {
+        if (!data)
+            return loadBackupsAuto();
+        const hoy = new Date().toISOString().slice(0, 10);
+        let backups = loadBackupsAuto();
+        // Si ya hay un backup de hoy, lo actualizamos con la versión más reciente del día
+        // en vez de acumular uno por sesión.
+        backups = backups.filter((b) => b.fecha !== hoy);
+        backups.push({ fecha: hoy, guardadoEn: new Date().toISOString(), data });
+        while (backups.length > MAX_BACKUPS_AUTO)
+            backups.shift();
+        localStorage.setItem(STORAGE_KEY_BACKUPS, JSON.stringify(backups));
+        return backups;
+    }
+    catch (e) {
+        // localStorage lleno o no disponible: no rompemos la app por esto.
+        return loadBackupsAuto();
+    }
+}
+function marcarUltimoExport() {
+    try {
+        localStorage.setItem(STORAGE_KEY_ULTIMO_EXPORT, new Date().toISOString());
+    }
+    catch (e) { }
+}
+function diasDesdeUltimoExport() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY_ULTIMO_EXPORT);
+        if (!raw)
+            return null;
+        const dias = Math.floor((Date.now() - new Date(raw).getTime()) / 86400000);
+        return dias;
+    }
+    catch (e) {
+        return null;
+    }
+}
 function loadDraftPartido() {
     try {
         const raw = localStorage.getItem(STORAGE_KEY_DRAFT);
@@ -1577,6 +1632,17 @@ function TorneoApp() {
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const [draftPartido, setDraftPartido] = useState(draftPartidoVacio);
     const [mostrarNuevaTemporada, setMostrarNuevaTemporada] = useState(false);
+    const [backupsAuto, setBackupsAuto] = useState([]);
+    const [diasSinExport, setDiasSinExport] = useState(null);
+    // ---------- Deshacer último cambio (historial de sesión) ----------
+    // No es un historial que sobreviva a cerrar la app (para eso están los backups automáticos
+    // y el export/import); es una red de seguridad inmediata: si un resultado, un fichaje o un
+    // ajuste de plantilla salió mal, un clic lo revierte sin tener que reconstruir todo a mano.
+    const MAX_UNDO_STACK = 20;
+    const undoStackRef = useRef([]);
+    const prevDataRef = useRef(null);
+    const primerGuardadoRef = useRef(true);
+    const [undoCount, setUndoCount] = useState(0);
     const saveTimer = useRef(null);
     const draftSaveTimer = useRef(null);
     useEffect(() => {
@@ -1584,6 +1650,11 @@ function TorneoApp() {
         if (dp)
             setDraftPartido({ ...draftPartidoVacio(), ...dp });
         const d = loadData();
+        // Antes de que la sesión toque cualquier dato, guardamos el estado tal como estaba
+        // como backup automático del día. Así, si algo se corrompe durante la sesión, hay
+        // una versión "de esta mañana" a la que volver.
+        setBackupsAuto(guardarBackupAuto(d));
+        setDiasSinExport(diasDesdeUltimoExport());
         if (d) {
             setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
             setPlayers(d.players || []);
@@ -1615,7 +1686,21 @@ function TorneoApp() {
             return;
         if (saveTimer.current)
             clearTimeout(saveTimer.current);
-        saveTimer.current = setTimeout(() => saveData({ teams, players, fases, transfers, avisos, xiTorneo, temporadas }), 400);
+        saveTimer.current = setTimeout(() => {
+            const nuevaData = { teams, players, fases, transfers, avisos, xiTorneo, temporadas };
+            // La primera vez que corre este efecto es justo después de cargar los datos: no hay
+            // ningún cambio real que registrar todavía, así que no se apila nada.
+            if (!primerGuardadoRef.current && prevDataRef.current) {
+                const anteriorClon = JSON.parse(JSON.stringify(prevDataRef.current));
+                undoStackRef.current.push(anteriorClon);
+                if (undoStackRef.current.length > MAX_UNDO_STACK)
+                    undoStackRef.current.shift();
+                setUndoCount(undoStackRef.current.length);
+            }
+            primerGuardadoRef.current = false;
+            prevDataRef.current = nuevaData;
+            saveData(nuevaData);
+        }, 400);
         return () => clearTimeout(saveTimer.current);
     }, [teams, players, fases, transfers, avisos, xiTorneo, temporadas, loaded]);
     useEffect(() => {
@@ -1674,6 +1759,29 @@ function TorneoApp() {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+        // Registramos que se hizo una copia real (fuera del navegador) para poder avisar
+        // más adelante si pasa mucho tiempo sin que se vuelva a exportar.
+        marcarUltimoExport();
+        setDiasSinExport(0);
+    };
+    // Aplica un objeto de datos (venga de un archivo importado o de un backup automático)
+    // al estado de la app. Se usa tanto en "Importar copia" como en "Restaurar backup".
+    const aplicarDatosCargados = (d) => {
+        setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
+        setPlayers(d.players || []);
+        if (d.fases) {
+            setFases({
+                apertura: d.fases.apertura && d.fases.apertura.length ? d.fases.apertura : generarJornadas(),
+                clausura: d.fases.clausura && d.fases.clausura.length ? d.fases.clausura : generarJornadas(),
+                liguilla: d.fases.liguilla || [],
+            });
+        }
+        else {
+            setFases({ apertura: d.jornadas && d.jornadas.length ? d.jornadas : generarJornadas(), clausura: generarJornadas(), liguilla: [] });
+        }
+        setTransfers(d.transfers || []);
+        setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
+        setTemporadas(d.temporadas || []);
     };
     const importarDatos = (e) => {
         const f = e.target.files && e.target.files[0];
@@ -1685,21 +1793,7 @@ function TorneoApp() {
                 const d = JSON.parse(ev.target.result);
                 if (!confirm("Esto reemplazará todos los datos actuales por los de la copia. ¿Continuar?"))
                     return;
-                setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
-                setPlayers(d.players || []);
-                if (d.fases) {
-                    setFases({
-                        apertura: d.fases.apertura && d.fases.apertura.length ? d.fases.apertura : generarJornadas(),
-                        clausura: d.fases.clausura && d.fases.clausura.length ? d.fases.clausura : generarJornadas(),
-                        liguilla: d.fases.liguilla || [],
-                    });
-                }
-                else {
-                    setFases({ apertura: d.jornadas && d.jornadas.length ? d.jornadas : generarJornadas(), clausura: generarJornadas(), liguilla: [] });
-                }
-                setTransfers(d.transfers || []);
-                setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
-                setTemporadas(d.temporadas || []);
+                aplicarDatosCargados(d);
                 alert("Copia importada correctamente.");
             }
             catch (err) {
@@ -1709,9 +1803,30 @@ function TorneoApp() {
         reader.readAsText(f);
         e.target.value = "";
     };
-    const reiniciarLiga = () => {
-        if (!confirm("Esto borra todos los partidos (jugados y por jugar) de Apertura, Clausura y Liguilla, deja el calendario en blanco y devuelve a cada equipo su presupuesto inicial. Las estad\u00EDsticas de los jugadores (goles, asistencias, tarjetas, minutos) tambi\u00E9n se ponen a cero. Los equipos y jugadores (nombres, fotos, valoraciones, plantillas) NO se borran. ¿Continuar?"))
+    // Restaura uno de los backups automáticos rotativos (guardados en este mismo dispositivo).
+    const restaurarBackupAuto = (fecha) => {
+        const backup = backupsAuto.find((b) => b.fecha === fecha);
+        if (!backup)
             return;
+        if (!confirm(`Esto reemplaza los datos actuales por el backup automático del ${fecha}. ¿Continuar?`))
+            return;
+        aplicarDatosCargados(backup.data);
+        alert("Backup restaurado.");
+    };
+    // Deshace el último cambio guardado (resultado cargado, fichaje, ajuste de plantilla, etc.)
+    // volviendo al estado inmediatamente anterior. Es un historial de sesión: no persiste entre
+    // recargas de la página, para eso están los backups automáticos y el export/import.
+    const deshacerUltimoCambio = () => {
+        if (undoStackRef.current.length === 0)
+            return;
+        const anterior = undoStackRef.current.pop();
+        setUndoCount(undoStackRef.current.length);
+        prevDataRef.current = anterior;
+        aplicarDatosCargados(anterior);
+        setAvisos(anterior.avisos || []);
+    };
+    const [confirmacionPeligrosa, setConfirmacionPeligrosa] = useState(null);
+    const ejecutarReinicioLiga = () => {
         setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
         setPlayers(players.map((p) => {
             const limpio = { ...p, goles: 0, asistencias: 0, partidosJugados: 0, minutosJugados: 0, scores: [], amarillas: 0, rojas: 0, sancionJornadas: 0, jornadasLesionado: 0 };
@@ -1721,6 +1836,7 @@ function TorneoApp() {
         setTeams(teams.map((t) => ({ ...t, presupuesto: t.presupuestoBase, historialCaja: [] })));
         alert("Liga reiniciada. Equipos y jugadores conservados.");
     };
+    const reiniciarLiga = () => setConfirmacionPeligrosa("liga");
     // Nueva Temporada: antes de reiniciar, congela un snapshot de la temporada (tabla final, campeón,
     // líderes y estadísticas completas de cada jugador) en el Salón de la Fama. Después renombra/re-escuda
     // equipos (sin tocar su plantilla), da de baja a los jugadores que no siguen y reinicia TODAS las
@@ -1784,11 +1900,7 @@ function TorneoApp() {
         setSelectedTeamId(null);
         alert("¡Nueva temporada en marcha! La anterior quedó guardada en el Salón de la Fama.");
     };
-    const borrarTodo = () => {
-        if (!confirm("Esto borra TODO: equipos, jugadores, calendario, resultados y fichajes. No se puede deshacer. ¿Seguro que quieres continuar?"))
-            return;
-        if (!confirm("\u00DAltima confirmaci\u00F3n: se perder\u00E1 absolutamente todo. ¿Confirmas el borrado total?"))
-            return;
+    const ejecutarBorradoTodo = () => {
         setTeams([]);
         setPlayers([]);
         setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
@@ -1804,14 +1916,16 @@ function TorneoApp() {
         setSelectedTeamId(null);
         alert("Todos los datos fueron borrados.");
     };
+    const borrarTodo = () => setConfirmacionPeligrosa("todo");
     return (React.createElement("div", { className: "app-bg app-shell" },
         React.createElement("div", { className: "mobile-topbar" },
             React.createElement("button", { type: "button", className: "mobile-hamburger", onClick: () => setMobileNavOpen(true), "aria-label": "Abrir men\u00FA" },
                 React.createElement("span", null), React.createElement("span", null), React.createElement("span", null)),
-            React.createElement("span", { className: "mobile-topbar-title" }, "Liga ", React.createElement("span", { className: "opacity-90" }, "KONAMI"))),
+            React.createElement("span", { className: "mobile-topbar-title" }, "Liga ", React.createElement("span", { className: "opacity-90" }, "KONAMI")),
+            React.createElement("button", { type: "button", onClick: deshacerUltimoCambio, disabled: undoCount === 0, title: undoCount === 0 ? "No hay cambios para deshacer" : `Deshacer último cambio (${undoCount} disponibles)`, "aria-label": "Deshacer \u00FAltimo cambio", style: { marginLeft: "auto", background: "none", border: "none", fontSize: 18, opacity: undoCount === 0 ? 0.35 : 1, padding: "4px 8px", color: "#fff" } }, "\u21A9\uFE0F")),
         mobileNavOpen && React.createElement("div", { className: "mobile-backdrop", onClick: () => setMobileNavOpen(false) }),
         React.createElement("div", { className: "sidebar-spacer" }),
-        React.createElement(Sidebar, { NAV: NAV, tab: tab, goTab: goTab, collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed, mobileOpen: mobileNavOpen, onCloseMobile: () => setMobileNavOpen(false) }),
+        React.createElement(Sidebar, { NAV: NAV, tab: tab, goTab: goTab, collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed, mobileOpen: mobileNavOpen, onCloseMobile: () => setMobileNavOpen(false), undoCount: undoCount, onUndo: deshacerUltimoCambio }),
         React.createElement("div", { className: "app-main-col" },
             React.createElement("main", { className: "p-3 md:p-6 max-w-6xl mx-auto w-full" },
                 ["calendario", "partido", "xiideal"].includes(tab) && React.createElement(FaseSwitcher, { faseActiva: faseActiva, setFaseActiva: setFaseActiva, liguillaDisponible: fases.liguilla.length > 0 }),
@@ -1829,12 +1943,15 @@ function TorneoApp() {
                 tab === "rankings" && React.createElement(Rankings, { players: players, teams: teams, jornadas: todasLasJornadas }),
                 tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
                 tab === "sanciones" && React.createElement(Sanciones, { players: players, setPlayers: setPlayers, teams: teams }),
-                tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo, onNuevaTemporada: () => setMostrarNuevaTemporada(true) }),
+                tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo, onNuevaTemporada: () => setMostrarNuevaTemporada(true), backupsAuto: backupsAuto, onRestoreBackup: restaurarBackupAuto, diasSinExport: diasSinExport }),
                 mostrarNuevaTemporada && React.createElement(NuevaTemporadaModal, { teams: teams, players: players, proximoNumero: temporadas.length + 1, onClose: () => setMostrarNuevaTemporada(false), onConfirm: comenzarNuevaTemporada }),
+                confirmacionPeligrosa && React.createElement(ConfirmacionPeligrosaModal, confirmacionPeligrosa === "todo"
+                    ? { titulo: "Borrar todo", mensaje: "Esto borra TODO: equipos, jugadores, calendario, resultados y fichajes. No se puede deshacer.", palabra: "BORRAR", textoBoton: "\u2620\uFE0F Borrar todo", onConfirm: ejecutarBorradoTodo, onClose: () => setConfirmacionPeligrosa(null) }
+                    : { titulo: "Reiniciar liga", mensaje: "Esto borra todos los partidos (jugados y por jugar) de Apertura, Clausura y Liguilla, deja el calendario en blanco y devuelve a cada equipo su presupuesto inicial. Las estad\u00EDsticas de los jugadores (goles, asistencias, tarjetas, minutos) tambi\u00E9n se ponen a cero. Los equipos y jugadores (nombres, fotos, valoraciones, plantillas) NO se borran.", palabra: "REINICIAR", textoBoton: "\uD83D\uDDD1\uFE0F Reiniciar liga", onConfirm: ejecutarReinicioLiga, onClose: () => setConfirmacionPeligrosa(null) }),
                 tab === "salonfama" && React.createElement(SalonDeLaFama, { temporadas: temporadas })))));
 }
 // ---------- Sidebar ----------
-function Sidebar({ NAV, tab, goTab, collapsed, setCollapsed, mobileOpen, onCloseMobile }) {
+function Sidebar({ NAV, tab, goTab, collapsed, setCollapsed, mobileOpen, onCloseMobile, undoCount, onUndo }) {
     // En móvil el sidebar funciona como cajón (drawer): ignora "collapsed" y se muestra siempre expandido
     // con etiquetas, controlado por mobileOpen/onCloseMobile en vez de por el ancho fijo de escritorio.
     const collapsedEfectivo = collapsed;
@@ -1845,6 +1962,9 @@ function Sidebar({ NAV, tab, goTab, collapsed, setCollapsed, mobileOpen, onClose
                 "Liga ",
                 React.createElement("span", { className: "opacity-90" }, "KONAMI"))),
         onCloseMobile && React.createElement("button", { type: "button", className: "sidebar-mobile-close", onClick: onCloseMobile, "aria-label": "Cerrar men\u00FA" }, "\u2715"),
+        onUndo && React.createElement("button", { type: "button", onClick: onUndo, disabled: !undoCount, title: undoCount ? `Deshacer último cambio (${undoCount} disponibles)` : "No hay cambios para deshacer", className: "sidebar-link", style: { opacity: undoCount ? 1 : 0.4, marginBottom: 4 } },
+            React.createElement("span", { className: "sidebar-icon" }, "\u21A9\uFE0F"),
+            React.createElement("span", { className: "label" }, undoCount ? `Deshacer (${undoCount})` : "Deshacer")),
         React.createElement("nav", { className: "sidebar-nav" }, NAV.map((n) => {
             const active = tab === n.id;
             return React.createElement("button", { key: n.id, onClick: () => goTab(n.id), title: n.label, className: `sidebar-link${active ? " active" : ""}` },
@@ -2000,7 +2120,13 @@ function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaG
                 React.createElement("button", { onClick: () => setTab("tabla"), className: "dash-extra-btn" }, "\uD83D\uDCCA Tabla")))));
 }
 // ---------- Extras ----------
-function Extras({ onExport, onImport, onResetLiga, onResetTodo, onNuevaTemporada }) {
+function Extras({ onExport, onImport, onResetLiga, onResetTodo, onNuevaTemporada, backupsAuto, onRestoreBackup, diasSinExport }) {
+    const backups = (backupsAuto || []).slice().sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+    const avisoExport = diasSinExport == null || diasSinExport >= 7;
+    const filasBackups = backups.map((b) => React.createElement("div", { key: b.fecha, className: "flex items-center justify-between gap-2 text-xs border-t border-zinc-100 pt-1.5 first:border-t-0 first:pt-0" }, React.createElement("span", null, b.fecha), React.createElement("button", { onClick: () => onRestoreBackup(b.fecha), className: "text-xs px-2 py-1 rounded-lg font-semibold", style: { background: "#f4f4f5", color: "#3f3f46" } }, "Restaurar")));
+    const listaBackups = backups.length === 0
+        ? React.createElement("p", { className: "text-xs text-zinc-400" }, "Aún no hay backups automáticos guardados.")
+        : React.createElement("div", { className: "space-y-1" }, filasBackups);
     return (React.createElement("div", { className: "space-y-4" },
         React.createElement("h2", { className: "text-lg font-black" }, "\uD83E\uDDF0 Extras"),
         React.createElement("div", { className: "card2 p-4", style: { borderColor: "#d9e0a0" } },
@@ -2014,11 +2140,20 @@ function Extras({ onExport, onImport, onResetLiga, onResetTodo, onNuevaTemporada
                 React.createElement(Icon, { size: 16 }, "\uD83D\uDCBE"),
                 " Copia de seguridad"),
             React.createElement("p", { className: "text-xs text-zinc-500 mb-3" }, "Tus datos se guardan solos en este dispositivo. Para no perderlos si cambias de navegador o borras datos del sitio, guarda una copia de vez en cuando."),
+            avisoExport && React.createElement("div", { className: "text-xs font-semibold px-3 py-2 rounded-lg mb-3", style: { background: "#fef3c7", color: "#92400e" } }, diasSinExport == null
+                ? "\u26A0\uFE0F Todav\u00EDa no exportaste ninguna copia real. Si el navegador borra sus datos, se pierde todo."
+                : `\u26A0\uFE0F Van ${diasSinExport} d\u00EDas desde tu \u00FAltima copia exportada. Te conviene bajar una nueva.`),
             React.createElement("div", { className: "flex flex-wrap gap-2" },
                 React.createElement("button", { onClick: onExport, className: "btn-olive text-xs px-3 py-2 rounded-lg font-semibold" }, "\u2B07\uFE0F Exportar copia (.json)"),
                 React.createElement("label", { className: "file-btn" },
                     "\u2B06\uFE0F Importar copia",
                     React.createElement("input", { type: "file", accept: "application/json", className: "hidden", onChange: onImport })))),
+        React.createElement("div", { className: "card2 p-4" },
+            React.createElement("div", { className: "font-bold mb-1 flex items-center gap-2" },
+                React.createElement(Icon, { size: 16 }, "\uD83D\uDD52"),
+                " Backups autom\u00E1ticos (en este dispositivo)"),
+            React.createElement("p", { className: "text-xs text-zinc-500 mb-3" }, "Cada vez que abr\u00EDs la app se guarda una copia del d\u00EDa, sin que tengas que hacer nada. Sirve para volver atr\u00E1s si algo se rompe durante una sesi\u00F3n, pero NO reemplaza exportar tu copia real: si se borran los datos del sitio, estos backups se pierden tambi\u00E9n."),
+            listaBackups),
         React.createElement("div", { className: "card2 p-4", style: { borderColor: "#fecaca" } },
             React.createElement("div", { className: "font-bold mb-1 flex items-center gap-2 text-red-600" },
                 React.createElement(Icon, { size: 16 }, "\u26A0\uFE0F"),
@@ -2041,6 +2176,28 @@ function FilaJugadorTemporada({ p, edit, onChange }) {
         React.createElement("div", { className: "flex items-center gap-1 shrink-0" },
             React.createElement("span", { className: "text-[10px] text-zinc-400 uppercase font-semibold" }, "GRL"),
             React.createElement(NumberField, { min: 60, max: 99, disabled: comodin || !queda, value: comodin ? GRL_COMODIN : edit.valoracion, onCommit: (n) => onChange({ valoracion: n }), className: "w-16 text-center" })));
+}
+// Modal de confirmación reforzada para acciones destructivas irreversibles (borrar todo,
+// reiniciar liga): en vez de un confirm() nativo, exige escribir una palabra exacta para
+// habilitar el botón de confirmar.
+function ConfirmacionPeligrosaModal({ titulo, mensaje, palabra, textoBoton, onConfirm, onClose }) {
+    const [texto, setTexto] = useState("");
+    const habilitado = texto.trim().toUpperCase() === palabra.toUpperCase();
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex justify-between items-center mb-2" },
+                React.createElement("span", { className: "font-black text-lg text-red-600" }, "\u26A0\uFE0F " + titulo),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement("p", { className: "text-xs text-zinc-500 mb-3" }, mensaje),
+            React.createElement("p", { className: "text-xs text-zinc-500 mb-3" }, "Hac\u00E9 una copia de seguridad antes si no est\u00E1s seguro (Extras \u2192 Copia de seguridad)."),
+            React.createElement("div", { className: "mb-3" },
+                React.createElement("label", { className: "flex flex-col gap-0.5" },
+                    React.createElement("span", { className: "text-zinc-500 font-medium text-xs" }, `Escrib\u00ED "${palabra}" para confirmar`),
+                    React.createElement("input", { className: "w-full font-semibold", value: texto, onChange: (e) => setTexto(e.target.value), placeholder: palabra, autoFocus: true }))),
+            React.createElement("div", { className: "flex justify-end gap-2" },
+                React.createElement("button", { onClick: onClose, className: "text-xs px-3 py-2 rounded-lg font-semibold", style: { background: "#f4f4f5", color: "#3f3f46" } }, "Cancelar"),
+                React.createElement("button", { onClick: () => { onConfirm(); onClose(); }, disabled: !habilitado, className: "text-xs px-3 py-2 rounded-lg font-semibold bg-red-600 text-white disabled:opacity-40" }, textoBoton || "Confirmar"))));
 }
 function NuevaTemporadaModal({ teams, players, proximoNumero, onClose, onConfirm }) {
     const [nombreTemporada, setNombreTemporada] = useState(`Temporada ${proximoNumero || 1}`);
@@ -2414,6 +2571,25 @@ function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack })
                 return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); } })),
         mostrarFinanzas && React.createElement(FinanzasClubSheet, { team: team, onClose: () => setMostrarFinanzas(false) })));
 }
+// Gráfico de línea minimalista en SVG puro (sin librerías externas) para mostrar tendencias
+// simples, como la evolución del score de un jugador partido a partido.
+function MiniLineChart({ values, color, minFijo, maxFijo }) {
+    if (!values || values.length < 2)
+        return null;
+    const W = 300, H = 70, pad = 6;
+    const min = minFijo != null ? minFijo : Math.min(...values);
+    const max = maxFijo != null ? maxFijo : Math.max(...values);
+    const rango = (max - min) || 1;
+    const puntos = values.map((v, i) => {
+        const x = pad + (i / (values.length - 1)) * (W - pad * 2);
+        const y = H - pad - ((v - min) / rango) * (H - pad * 2);
+        return [x, y];
+    });
+    const pathPoints = puntos.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+    return React.createElement("svg", { viewBox: `0 0 ${W} ${H}`, style: { width: "100%", height: 70, display: "block" } },
+        React.createElement("polyline", { points: pathPoints, fill: "none", stroke: color || "#8F9500", strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" }),
+        puntos.map(([x, y], i) => React.createElement("circle", { key: i, cx: x, cy: y, r: 2.5, fill: color || "#8F9500" })));
+}
 function PlayerSheet({ player: p, onClose, onChange, onRemove }) {
     const scoreProm = avg(p.scores);
     const comodin = isComodin(p);
@@ -2472,6 +2648,14 @@ function PlayerSheet({ player: p, onClose, onChange, onRemove }) {
                     React.createElement(NumberField, { min: 0, value: p.jornadasLesionado || 0, onCommit: (n) => onChange({ jornadasLesionado: n }) })),
                 React.createElement(Field, { label: "Valor de mercado" },
                     React.createElement("input", { disabled: true, value: fmtMoney(calcValorMercado(p)) }))),
+            p.scores && p.scores.length >= 2 && React.createElement("div", { className: "mt-4 pt-3 border-t border-zinc-100" },
+                React.createElement("div", { className: "text-xs font-semibold text-zinc-500 mb-1.5 flex items-center gap-1" },
+                    React.createElement(Icon, { size: 13 }, "\uD83D\uDCC8"),
+                    " Evoluci\u00F3n de score (\u00FAltimos ", p.scores.length, " partidos)"),
+                React.createElement(MiniLineChart, { values: p.scores, color: "#8F9500", minFijo: 0, maxFijo: 10 }),
+                React.createElement("div", { className: "flex justify-between text-[10px] text-zinc-400 mt-0.5" },
+                    React.createElement("span", null, "Partido 1"),
+                    React.createElement("span", null, `Partido ${p.scores.length}`))),
             React.createElement("div", { className: "flex justify-between items-center mt-4 pt-3 border-t border-zinc-100" },
                 React.createElement("button", { onClick: onRemove, className: "flex items-center gap-1 text-xs px-3 py-2 rounded-lg bg-red-50 text-red-600 hover:bg-red-100" },
                     React.createElement(Icon, { size: 13 }, "\uD83D\uDDD1\uFE0F"),
