@@ -1,3 +1,14 @@
+  window.addEventListener("error", function (e) {
+    var root = document.getElementById("root");
+    if (root) {
+      root.innerHTML =
+        '<div style="font-family:monospace;white-space:pre-wrap;padding:20px;color:#b00020;background:#fff3f3;">' +
+        '⚠️ Error al cargar la app:\n\n' + (e.message || e) +
+        '\n\n(Archivo: ' + (e.filename || '?') + ', línea ' + (e.lineno || '?') + ')' +
+        '\n\nSi ves esto justo después de abrir el archivo, revisa tu conexión a internet: la app necesita cargar React desde internet la primera vez.</div>';
+    }
+  });
+
 "use strict";
 const { useState, useEffect, useMemo, useRef } = React;
 // ---------- Constantes ----------
@@ -1018,6 +1029,10 @@ function TorneoApp() {
     const [fases, setFases] = useState({ apertura: [], clausura: [], liguilla: [] });
     const [faseActiva, setFaseActiva] = usePersistedState("faseActiva", "apertura");
     const [transfers, setTransfers] = useState([]);
+    // Salón de la Fama: un snapshot congelado por cada temporada cerrada (tabla final, campeón, líderes
+    // individuales y estadísticas completas de cada jugador), para poder reiniciar las estadísticas
+    // sin perder el historial.
+    const [temporadas, setTemporadas] = useState([]);
     // XI Ideal "del Torneo": uno completamente independiente por período (Torneo completo / Apertura / Clausura / Liguilla).
     // Es manual (igual que el XI de la Jornada) y cada período guarda su propia selección, sin heredar ni mezclarse con los demás.
     const [xiTorneo, setXiTorneo] = useState({ torneo: null, apertura: null, clausura: null, liguilla: null });
@@ -1027,6 +1042,7 @@ function TorneoApp() {
     const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const [draftPartido, setDraftPartido] = useState(draftPartidoVacio);
+    const [mostrarNuevaTemporada, setMostrarNuevaTemporada] = useState(false);
     const saveTimer = useRef(null);
     const draftSaveTimer = useRef(null);
     useEffect(() => {
@@ -1039,6 +1055,7 @@ function TorneoApp() {
             setPlayers(d.players || []);
             setTransfers(d.transfers || []);
             setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
+            setTemporadas(d.temporadas || []);
             if (d.fases) {
                 setFases({
                     apertura: d.fases.apertura && d.fases.apertura.length ? d.fases.apertura : generarJornadas(),
@@ -1063,9 +1080,9 @@ function TorneoApp() {
             return;
         if (saveTimer.current)
             clearTimeout(saveTimer.current);
-        saveTimer.current = setTimeout(() => saveData({ teams, players, fases, transfers, xiTorneo }), 400);
+        saveTimer.current = setTimeout(() => saveData({ teams, players, fases, transfers, xiTorneo, temporadas }), 400);
         return () => clearTimeout(saveTimer.current);
-    }, [teams, players, fases, transfers, xiTorneo, loaded]);
+    }, [teams, players, fases, transfers, xiTorneo, temporadas, loaded]);
     useEffect(() => {
         if (!loaded)
             return;
@@ -1101,6 +1118,7 @@ function TorneoApp() {
         { id: "xiideal", label: "XI de la Jornada", icon: "🌟" },
         { id: "xiidealtorneo", label: "XI Ideal del Torneo", icon: "🏆" },
         { id: "premios", label: "Premios de Temporada", icon: "🏅" },
+        { id: "salonfama", label: "Salón de la Fama", icon: "🏛️" },
         { id: "mercado", label: "Mercado", icon: "🛒" },
         { id: "jugadores", label: "Jugadores", icon: "🔍" },
         { id: "sanciones", label: "Sanciones", icon: "🛡️" },
@@ -1112,7 +1130,7 @@ function TorneoApp() {
     const goTab = (id) => { setTab(id); if (id !== "equipos")
         setSelectedTeamId(null); setMobileNavOpen(false); };
     const exportarDatos = () => {
-        const blob = new Blob([JSON.stringify({ teams, players, fases, transfers, xiTorneo }, null, 2)], { type: "application/json" });
+        const blob = new Blob([JSON.stringify({ teams, players, fases, transfers, xiTorneo, temporadas }, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -1146,6 +1164,7 @@ function TorneoApp() {
                 }
                 setTransfers(d.transfers || []);
                 setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
+                setTemporadas(d.temporadas || []);
                 alert("Copia importada correctamente.");
             }
             catch (err) {
@@ -1167,6 +1186,69 @@ function TorneoApp() {
         setTeams(teams.map((t) => ({ ...t, presupuesto: t.presupuestoBase, historialCaja: [] })));
         alert("Liga reiniciada. Equipos y jugadores conservados.");
     };
+    // Nueva Temporada: antes de reiniciar, congela un snapshot de la temporada (tabla final, campeón,
+    // líderes y estadísticas completas de cada jugador) en el Salón de la Fama. Después renombra/re-escuda
+    // equipos (sin tocar su plantilla), da de baja a los jugadores que no siguen y reinicia TODAS las
+    // estadísticas (incluidos MVPs), el calendario y el presupuesto de los equipos.
+    const comenzarNuevaTemporada = (teamEdits, playerEdits, nombreTemporada) => {
+        const nombreEquipoDe = (p) => { const t = teams.find((x) => x.id === p.equipoId); return t ? t.nombre : "Agente libre"; };
+        const finalIda = fases.liguilla.find((j) => j.numero === 5);
+        const finalVuelta = fases.liguilla.find((j) => j.numero === 6);
+        const campeonId = finalIda && finalVuelta ? ganadorSerie(finalIda.partidos[0], finalVuelta.partidos[0]) : null;
+        const campeonTeam = campeonId ? teams.find((t) => t.id === campeonId) : null;
+        const goleador = [...players].filter((p) => (p.goles || 0) > 0).sort((a, b) => (b.goles || 0) - (a.goles || 0))[0] || null;
+        const asistidor = [...players].filter((p) => (p.asistencias || 0) > 0).sort((a, b) => (b.asistencias || 0) - (a.asistencias || 0))[0] || null;
+        const conScore = players.filter((p) => p.scores && p.scores.length > 0);
+        const mvpProm = [...conScore].sort((a, b) => avg(b.scores) - avg(a.scores))[0] || null;
+        const snapshot = {
+            id: uid("temp"),
+            numero: temporadas.length + 1,
+            nombre: (nombreTemporada || "").trim() || `Temporada ${temporadas.length + 1}`,
+            fecha: new Date().toISOString(),
+            campeon: campeonTeam ? { id: campeonTeam.id, nombre: campeonTeam.nombre, escudo: campeonTeam.escudo } : null,
+            tablaGeneral: tablaGeneral.map((t) => ({ id: t.id, nombre: t.nombre, escudo: t.escudo, pj: t.pj, pg: t.pg, pe: t.pe, pp: t.pp, gf: t.gf, gc: t.gc, pts: t.pts })),
+            goleador: goleador ? { id: goleador.id, nombre: goleador.nombre, foto: goleador.foto, equipo: nombreEquipoDe(goleador), goles: goleador.goles || 0 } : null,
+            asistidor: asistidor ? { id: asistidor.id, nombre: asistidor.nombre, foto: asistidor.foto, equipo: nombreEquipoDe(asistidor), asistencias: asistidor.asistencias || 0 } : null,
+            mvp: mvpProm ? { id: mvpProm.id, nombre: mvpProm.nombre, foto: mvpProm.foto, equipo: nombreEquipoDe(mvpProm), score: avg(mvpProm.scores) } : null,
+            equipos: teams.map((t) => ({ id: t.id, nombre: t.nombre, escudo: t.escudo })),
+            jugadores: players.map((p) => ({
+                id: p.id, nombre: p.nombre, foto: p.foto, dorsal: p.dorsal, posicion: p.posicion,
+                equipoId: p.equipoId, equipoNombre: nombreEquipoDe(p), valoracion: p.valoracion,
+                goles: p.goles || 0, asistencias: p.asistencias || 0, partidosJugados: p.partidosJugados || 0,
+                minutosJugados: p.minutosJugados || 0, amarillas: p.amarillas || 0, rojas: p.rojas || 0,
+                mvps: p.mvps || 0, golesRecibidos: p.golesRecibidos || 0,
+                scoreProm: p.scores && p.scores.length ? avg(p.scores) : null,
+                siguioEnLiga: !(playerEdits[p.id] && playerEdits[p.id].queda === false),
+            })),
+        };
+        setTemporadas((prev) => [...prev, snapshot]);
+        setTeams(teams.map((t) => {
+            const edit = teamEdits[t.id] || {};
+            return {
+                ...t,
+                nombre: (edit.nombre || "").trim() || t.nombre,
+                escudo: edit.escudo != null ? edit.escudo : t.escudo,
+                presupuesto: t.presupuestoBase,
+                historialCaja: [],
+            };
+        }));
+        setPlayers(players
+            .filter((p) => { const e = playerEdits[p.id]; return !e || e.queda !== false; })
+            .map((p) => {
+                const e = playerEdits[p.id];
+                const limpio = {
+                    ...p,
+                    valoracion: e && e.valoracion != null ? e.valoracion : p.valoracion,
+                    goles: 0, asistencias: 0, partidosJugados: 0, minutosJugados: 0, scores: [],
+                    amarillas: 0, rojas: 0, sancionJornadas: 0, jornadasLesionado: 0, mvps: 0,
+                };
+                limpio.valorMercado = calcValorMercado(limpio);
+                return limpio;
+            }));
+        setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
+        setSelectedTeamId(null);
+        alert("¡Nueva temporada en marcha! La anterior quedó guardada en el Salón de la Fama.");
+    };
     const borrarTodo = () => {
         if (!confirm("Esto borra TODO: equipos, jugadores, calendario, resultados y fichajes. No se puede deshacer. ¿Seguro que quieres continuar?"))
             return;
@@ -1177,6 +1259,7 @@ function TorneoApp() {
         setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
         setTransfers([]);
         setXiTorneo({ torneo: null, apertura: null, clausura: null, liguilla: null });
+        setTemporadas([]);
         setDraftPartido(draftPartidoVacio());
         try {
             localStorage.removeItem(STORAGE_KEY);
@@ -1211,7 +1294,9 @@ function TorneoApp() {
                 tab === "rankings" && React.createElement(Rankings, { players: players, teams: teams, jornadas: todasLasJornadas }),
                 tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
                 tab === "sanciones" && React.createElement(Sanciones, { players: players, setPlayers: setPlayers, teams: teams }),
-                tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo })))));
+                tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo, onNuevaTemporada: () => setMostrarNuevaTemporada(true) }),
+                mostrarNuevaTemporada && React.createElement(NuevaTemporadaModal, { teams: teams, players: players, proximoNumero: temporadas.length + 1, onClose: () => setMostrarNuevaTemporada(false), onConfirm: comenzarNuevaTemporada }),
+                tab === "salonfama" && React.createElement(SalonDeLaFama, { temporadas: temporadas })))));
 }
 // ---------- Sidebar ----------
 function Sidebar({ NAV, tab, goTab, collapsed, setCollapsed, mobileOpen, onCloseMobile }) {
@@ -1380,9 +1465,15 @@ function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaG
                 React.createElement("button", { onClick: () => setTab("tabla"), className: "dash-extra-btn" }, "\uD83D\uDCCA Tabla")))));
 }
 // ---------- Extras ----------
-function Extras({ onExport, onImport, onResetLiga, onResetTodo }) {
+function Extras({ onExport, onImport, onResetLiga, onResetTodo, onNuevaTemporada }) {
     return (React.createElement("div", { className: "space-y-4" },
         React.createElement("h2", { className: "text-lg font-black" }, "\uD83E\uDDF0 Extras"),
+        React.createElement("div", { className: "card2 p-4", style: { borderColor: "#d9e0a0" } },
+            React.createElement("div", { className: "font-bold mb-1 flex items-center gap-2" },
+                React.createElement(Icon, { size: 16 }, "\uD83C\uDD95"),
+                " Nueva Temporada"),
+            React.createElement("p", { className: "text-xs text-zinc-500 mb-3" }, "Al terminar la temporada (Liguilla incluida), arranc\u00E1 la siguiente: renombr\u00E1/cambi\u00E1 el escudo de cada equipo (la plantilla no se toca), eleg\u00ED qu\u00E9 jugadores siguen en la liga y ajust\u00E1 valoraciones una por una. Se reinician el calendario, las estad\u00EDsticas de temporada y el presupuesto de los equipos."),
+            React.createElement("button", { onClick: onNuevaTemporada, className: "btn-olive text-xs px-3 py-2 rounded-lg font-semibold" }, "\uD83C\uDD95 Comenzar nueva temporada")),
         React.createElement("div", { className: "card2 p-4" },
             React.createElement("div", { className: "font-bold mb-1 flex items-center gap-2" },
                 React.createElement(Icon, { size: 16 }, "\uD83D\uDCBE"),
@@ -1402,11 +1493,151 @@ function Extras({ onExport, onImport, onResetLiga, onResetTodo }) {
                 React.createElement("button", { onClick: onResetLiga, className: "text-xs px-3 py-2 rounded-lg font-semibold", style: { background: "#fef3c7", color: "#92400e" } }, "\uD83D\uDDD1\uFE0F Reiniciar liga (borrar todos los partidos)"),
                 React.createElement("button", { onClick: onResetTodo, className: "text-xs px-3 py-2 rounded-lg font-semibold bg-red-50 text-red-600 hover:bg-red-100" }, "\u2620\uFE0F Borrar todo")))));
 }
+// ---------- Nueva Temporada: renombrar/re-escudar equipos, dar de baja jugadores y ajustar valoraciones ----------
+function FilaJugadorTemporada({ p, edit, onChange }) {
+    const comodin = isComodin(p);
+    const queda = edit.queda !== false;
+    return React.createElement("div", { className: "flex items-center gap-2 px-2 py-1.5 rounded-lg" + (queda ? "" : " opacity-40"), style: { background: "#F7F7F2" } },
+        React.createElement("input", { type: "checkbox", checked: queda, onChange: (e) => onChange({ queda: e.target.checked }) }),
+        p.foto ? React.createElement("img", { src: p.foto, className: "w-8 h-8 rounded-full object-cover shrink-0" }) : React.createElement("div", { className: "avatar-ph w-8 h-8 rounded-full text-[10px] font-bold shrink-0" }, p.dorsal),
+        React.createElement("div", { className: "flex-1 text-xs min-w-0" },
+            React.createElement("div", { className: "font-medium truncate" }, p.nombre, comodin && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full ml-1", style: { background: "#F4F7DE", color: "#8F9500" } }, "COMOD\u00CDN")),
+            React.createElement("div", { className: "text-zinc-500" }, `#${p.dorsal} \u00B7 ${p.posicion}`)),
+        React.createElement("div", { className: "flex items-center gap-1 shrink-0" },
+            React.createElement("span", { className: "text-[10px] text-zinc-400 uppercase font-semibold" }, "GRL"),
+            React.createElement(NumberField, { min: 60, max: 99, disabled: comodin || !queda, value: comodin ? GRL_COMODIN : edit.valoracion, onCommit: (n) => onChange({ valoracion: n }), className: "w-16 text-center" })));
+}
+function NuevaTemporadaModal({ teams, players, proximoNumero, onClose, onConfirm }) {
+    const [nombreTemporada, setNombreTemporada] = useState(`Temporada ${proximoNumero || 1}`);
+    const [teamEdits, setTeamEdits] = useState(() => {
+        const m = {};
+        teams.forEach((t) => { m[t.id] = { nombre: t.nombre, escudo: t.escudo }; });
+        return m;
+    });
+    const [playerEdits, setPlayerEdits] = useState(() => {
+        const m = {};
+        players.forEach((p) => { m[p.id] = { queda: true, valoracion: p.valoracion }; });
+        return m;
+    });
+    const updateTeam = (id, patch) => setTeamEdits((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+    const updatePlayer = (id, patch) => setPlayerEdits((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
+    const marcarEquipo = (teamId, queda) => {
+        const ids = players.filter((p) => p.equipoId === teamId).map((p) => p.id);
+        setPlayerEdits((prev) => {
+            const next = { ...prev };
+            ids.forEach((id) => { next[id] = { ...next[id], queda }; });
+            return next;
+        });
+    };
+    const totalSeQuedan = players.filter((p) => (playerEdits[p.id] || {}).queda !== false).length;
+    const totalSeVan = players.length - totalSeQuedan;
+    const librePlayers = players.filter((p) => !p.equipoId);
+    const confirmar = () => {
+        const msg = "Vas a comenzar una nueva temporada:\n\n" +
+            "\u2022 Se borra el calendario de Apertura, Clausura y Liguilla (jugado y por jugar).\n" +
+            "\u2022 Los jugadores que se queden vuelven a foja cero (goles, asistencias, tarjetas, minutos, lesiones).\n" +
+            "\u2022 Cada equipo recupera su presupuesto inicial.\n" +
+            `\u2022 ${totalSeVan} jugador${totalSeVan === 1 ? "" : "es"} ${totalSeVan === 1 ? "ser\u00E1 eliminado" : "ser\u00E1n eliminados"} de la liga.\n\n` +
+            "Los nombres/escudos de equipo y las valoraciones que hayas cambiado se aplican tal cual. ¿Confirmas?";
+        if (!confirm(msg))
+            return;
+        onConfirm(teamEdits, playerEdits, nombreTemporada);
+        onClose();
+    };
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet sheet-lg", onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex justify-between items-center mb-2" },
+                React.createElement("span", { className: "font-black text-lg" }, "\uD83C\uDD95 Nueva Temporada"),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement("p", { className: "text-xs text-zinc-500 mb-3" }, "Actualiz\u00E1 nombre y escudo de cada equipo (la plantilla no cambia), destild\u00E1 a los jugadores que no siguen en la liga y ajust\u00E1 valoraciones (GRL) una por una. Al confirmar, la temporada actual queda guardada en el \uD83C\uDFDB\uFE0F Sal\u00F3n de la Fama y se reinician calendario, presupuestos y TODAS las estad\u00EDsticas."),
+            React.createElement("div", { className: "mb-3" },
+                React.createElement("label", { className: "flex flex-col gap-0.5" },
+                    React.createElement("span", { className: "text-zinc-500 font-medium text-xs" }, "Nombre de la temporada que termina (as\u00ED va a quedar guardada en el Sal\u00F3n de la Fama)"),
+                    React.createElement("input", { className: "w-full font-semibold", value: nombreTemporada, onChange: (e) => setNombreTemporada(e.target.value), placeholder: "Ej. Temporada 2026/1" }))),
+            React.createElement("div", { className: "space-y-3" },
+                teams.map((t) => {
+                    const squad = players.filter((p) => p.equipoId === t.id);
+                    const edit = teamEdits[t.id] || { nombre: t.nombre, escudo: t.escudo };
+                    return React.createElement("div", { key: t.id, className: "card2 p-3" },
+                        React.createElement("div", { className: "flex gap-3 mb-2 items-center" },
+                            React.createElement(FotoUpload, { value: edit.escudo, onChange: (v) => updateTeam(t.id, { escudo: v }), size: 48, label: "Escudo" }),
+                            React.createElement("input", { className: "flex-1 font-semibold", value: edit.nombre, onChange: (e) => updateTeam(t.id, { nombre: e.target.value }), placeholder: "Nombre del equipo" })),
+                        squad.length > 0 && React.createElement("div", { className: "flex justify-end gap-3 mb-1" },
+                            React.createElement("button", { type: "button", className: "text-[11px] link-blue", onClick: () => marcarEquipo(t.id, true) }, "Marcar todos"),
+                            React.createElement("button", { type: "button", className: "text-[11px] link-blue", onClick: () => marcarEquipo(t.id, false) }, "Desmarcar todos")),
+                        React.createElement("div", { className: "space-y-1" },
+                            squad.map((p) => React.createElement(FilaJugadorTemporada, { key: p.id, p: p, edit: playerEdits[p.id] || { queda: true, valoracion: p.valoracion }, onChange: (patch) => updatePlayer(p.id, patch) })),
+                            !squad.length && React.createElement("div", { className: "text-xs text-zinc-400 py-1" }, "Sin jugadores.")));
+                }),
+                librePlayers.length > 0 && React.createElement("div", { className: "card2 p-3" },
+                    React.createElement("div", { className: "font-bold mb-2 text-sm flex items-center gap-2" },
+                        React.createElement(Icon, { size: 15 }, "\uD83C\uDD93"), " Agentes libres"),
+                    React.createElement("div", { className: "space-y-1" },
+                        librePlayers.map((p) => React.createElement(FilaJugadorTemporada, { key: p.id, p: p, edit: playerEdits[p.id] || { queda: true, valoracion: p.valoracion }, onChange: (patch) => updatePlayer(p.id, patch) }))))),
+            React.createElement("div", { className: "flex items-center justify-between gap-3 mt-4 pt-3 border-t" },
+                React.createElement("div", { className: "text-xs text-zinc-500" }, `${totalSeQuedan} se quedan \u00B7 ${totalSeVan} se van`),
+                React.createElement("button", { onClick: confirmar, className: "btn-olive rounded-full px-5 py-2 font-semibold text-sm" }, "Comenzar nueva temporada"))));
+}
 function StatCard({ label, value, sub }) {
     return (React.createElement("div", { className: "card2 p-3" },
         React.createElement("div", { className: "text-[11px] uppercase tracking-wide text-zinc-500 font-semibold" }, label),
         React.createElement("div", { className: "text-xl font-black" }, value),
         sub && React.createElement("div", { className: "text-xs text-[#8F9500] font-semibold" }, sub)));
+}
+// ---------- Salón de la Fama: snapshots congelados de temporadas cerradas ----------
+function TemporadaCard({ t, abierta, onToggle }) {
+    const jugadoresOrdenados = useMemo(() => [...t.jugadores].sort((a, b) => (b.goles + b.asistencias) - (a.goles + a.asistencias) || b.goles - a.goles), [t.jugadores]);
+    const header = React.createElement("button", { type: "button", onClick: onToggle, className: "w-full flex items-center justify-between gap-3 text-left" },
+        React.createElement("div", { className: "flex items-center gap-3" },
+            t.campeon && t.campeon.escudo
+                ? React.createElement("img", { src: t.campeon.escudo, className: "w-10 h-10 rounded-full object-cover" })
+                : React.createElement("div", { className: "avatar-ph w-10 h-10 rounded-full" }, React.createElement(Icon, { size: 18 }, "\uD83C\uDFC6")),
+            React.createElement("div", null,
+                React.createElement("div", { className: "font-black" }, t.nombre),
+                React.createElement("div", { className: "text-xs text-zinc-500" },
+                    new Date(t.fecha).toLocaleDateString() + (t.campeon ? ` \u00B7 Campe\u00F3n: ${t.campeon.nombre}` : " \u00B7 Sin campe\u00F3n de Liguilla")))),
+        React.createElement(Icon, { size: 16, className: "text-zinc-400" }, abierta ? "\u25B2" : "\u25BC"));
+    if (!abierta)
+        return React.createElement("div", { className: "card2 p-4" }, header);
+    const lideres = React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-2" },
+        t.goleador && React.createElement(MediaCard, { icon: "\u26BD", label: "M\u00E1ximo goleador", imgSrc: t.goleador.foto, value: t.goleador.nombre, sub: `${t.goleador.goles} goles \u00B7 ${t.goleador.equipo}` }),
+        t.asistidor && React.createElement(MediaCard, { icon: "\uD83C\uDD70\uFE0F", label: "M\u00E1s asistencias", imgSrc: t.asistidor.foto, value: t.asistidor.nombre, sub: `${t.asistidor.asistencias} asist. \u00B7 ${t.asistidor.equipo}` }),
+        t.mvp && React.createElement(MediaCard, { icon: "\u2B50", label: "Mejor score promedio", imgSrc: t.mvp.foto, value: t.mvp.nombre, sub: `${t.mvp.score.toFixed(1)} \u00B7 ${t.mvp.equipo}` }));
+    const theadTabla = React.createElement("thead", null, React.createElement("tr", { className: "text-zinc-500 text-left" },
+        React.createElement("th", null, "#"), React.createElement("th", null, "Equipo"), React.createElement("th", { className: "text-center" }, "PJ"), React.createElement("th", { className: "text-center" }, "PG"), React.createElement("th", { className: "text-center" }, "PE"), React.createElement("th", { className: "text-center" }, "PP"), React.createElement("th", { className: "text-center" }, "GF"), React.createElement("th", { className: "text-center" }, "GC"), React.createElement("th", { className: "text-center" }, "Pts")));
+    const filasTabla = t.tablaGeneral.map((row, i) => React.createElement("tr", { key: row.id, className: "row-line" },
+        React.createElement("td", null, i + 1),
+        React.createElement("td", { className: "flex items-center gap-1.5 py-1" }, row.escudo ? React.createElement("img", { src: row.escudo, className: "w-5 h-5 rounded object-cover" }) : null, row.nombre),
+        React.createElement("td", { className: "text-center" }, row.pj), React.createElement("td", { className: "text-center" }, row.pg), React.createElement("td", { className: "text-center" }, row.pe), React.createElement("td", { className: "text-center" }, row.pp),
+        React.createElement("td", { className: "text-center" }, row.gf), React.createElement("td", { className: "text-center" }, row.gc),
+        React.createElement("td", { className: "text-center font-bold" }, row.pts)));
+    const tablaFinal = React.createElement("div", { className: "overflow-x-auto" }, React.createElement("table", { className: "text-xs w-full" }, theadTabla, React.createElement("tbody", null, filasTabla)));
+    const theadJugadores = React.createElement("thead", null, React.createElement("tr", { className: "text-zinc-500 text-left" },
+        React.createElement("th", null, "Jugador"), React.createElement("th", null, "Equipo"), React.createElement("th", { className: "text-center" }, "GRL"), React.createElement("th", { className: "text-center" }, "\u26BD"), React.createElement("th", { className: "text-center" }, "\uD83C\uDD70\uFE0F"), React.createElement("th", { className: "text-center" }, "PJ"), React.createElement("th", { className: "text-center" }, "MVPs"), React.createElement("th", { className: "text-center" }, "Score")));
+    const filasJugadores = jugadoresOrdenados.map((p) => React.createElement("tr", { key: p.id, className: "row-line" + (p.siguioEnLiga ? "" : " opacity-50") },
+        React.createElement("td", { className: "py-1" }, p.nombre, !p.siguioEnLiga && React.createElement("span", { className: "text-[10px] text-red-500 font-semibold ml-1" }, "(se fue)")),
+        React.createElement("td", null, p.equipoNombre),
+        React.createElement("td", { className: "text-center" }, p.valoracion),
+        React.createElement("td", { className: "text-center" }, p.goles),
+        React.createElement("td", { className: "text-center" }, p.asistencias),
+        React.createElement("td", { className: "text-center" }, p.partidosJugados),
+        React.createElement("td", { className: "text-center" }, p.mvps),
+        React.createElement("td", { className: "text-center" }, p.scoreProm != null ? p.scoreProm.toFixed(1) : "\u2014")));
+    const tablaJugadores = React.createElement("div", null,
+        React.createElement("div", { className: "font-bold text-sm mb-2" }, "Estad\u00EDsticas de todos los jugadores"),
+        React.createElement("div", { className: "overflow-x-auto" }, React.createElement("table", { className: "text-xs w-full" }, theadJugadores, React.createElement("tbody", null, filasJugadores))));
+    return React.createElement("div", { className: "card2 p-4" },
+        header,
+        React.createElement("div", { className: "mt-4 space-y-4" }, lideres, tablaFinal, tablaJugadores));
+}
+function SalonDeLaFama({ temporadas }) {
+    const [abierta, setAbierta] = useState(null);
+    const ordenadas = [...temporadas].sort((a, b) => b.numero - a.numero);
+    return React.createElement("div", { className: "space-y-4" },
+        React.createElement("h2", { className: "text-lg font-black flex items-center gap-2" }, React.createElement(Icon, { size: 18 }, "\uD83C\uDFDB\uFE0F"), " Sal\u00F3n de la Fama"),
+        !ordenadas.length && React.createElement("div", { className: "card2 p-8 text-center text-sm text-zinc-500" }, "A\u00FAn no hay temporadas guardadas. Cuando uses \u201CNueva Temporada\u201D en Extras, cada temporada cerrada va a quedar archivada ac\u00E1 con su tabla final, campe\u00F3n y las estad\u00EDsticas completas de cada jugador."),
+        ordenadas.map((t) => React.createElement(TemporadaCard, { key: t.id, t: t, abierta: abierta === t.id, onToggle: () => setAbierta(abierta === t.id ? null : t.id) })));
 }
 // ---------- Equipos: lista ----------
 function EquiposLista({ teams, setTeams, players, onOpen }) {
