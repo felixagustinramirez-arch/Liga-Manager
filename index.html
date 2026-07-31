@@ -2883,12 +2883,15 @@ function FormaBadges({ forma, teams, size }) {
     return React.createElement("div", { className: "flex items-center gap-1" }, forma.map((f, i) => React.createElement("span", { key: i, title: `J${f.jornadaNumero}: ${nombreResultado[f.resultado]} ${f.golesA}-${f.golesC} vs ${nombreRival(f.rivalId)}`, className: "inline-flex items-center justify-center rounded-full font-black shrink-0", style: { width: size || 20, height: size || 20, fontSize: (size || 20) >= 20 ? 10 : 9, ...estilos[f.resultado] } }, f.resultado)));
 }
 // Gráfico de línea (SVG puro, sin librerías) con la evolución de la posición en la tabla, jornada a jornada.
-// El eje Y está invertido (1° arriba) porque así se lee una tabla de posiciones.
-function GraficoPosiciones({ historial, totalEquipos, color }) {
+// El eje Y está invertido (1° arriba) porque así se lee una tabla de posiciones. Se agrega grilla completa
+// (una línea por posición, o cada N si hay muchos equipos), zona sombreada de clasificación (top 4, al
+// mismo estilo que la fila resaltada en la tabla), etiqueta de jornada bajo cada punto y tooltip nativo.
+function GraficoPosiciones({ historial, totalEquipos, color, zonaClasificacion }) {
     if (!historial || historial.length < 2) {
         return React.createElement("div", { className: "text-xs text-zinc-500 text-center py-6" }, "Se necesitan al menos 2 jornadas jugadas para graficar la evoluci\u00F3n en la tabla.");
     }
-    const W = 600, H = 170, padL = 24, padR = 10, padT = 10, padB = 8;
+    const zona = zonaClasificacion == null ? 4 : zonaClasificacion;
+    const W = 600, H = 210, padL = 26, padR = 10, padT = 10, padB = 20;
     const n = historial.length;
     const totalEj = Math.max(2, totalEquipos || n);
     const xAt = (i) => padL + (n === 1 ? 0 : (i * (W - padL - padR)) / (n - 1));
@@ -2897,19 +2900,60 @@ function GraficoPosiciones({ historial, totalEquipos, color }) {
     const mejor = Math.min(...historial.map((h) => h.posicion));
     const peor = Math.max(...historial.map((h) => h.posicion));
     const actual = historial[n - 1].posicion;
+    const col = color || "#B4BC00";
+    // Una línea de grilla por posición si hay pocos equipos; si hay muchos, cada N para no saturar.
+    const pasoGrilla = totalEj <= 12 ? 1 : Math.ceil(totalEj / 8);
+    const posicionesGrilla = [];
+    for (let p = 1; p <= totalEj; p += pasoGrilla) posicionesGrilla.push(p);
+    if (posicionesGrilla[posicionesGrilla.length - 1] !== totalEj) posicionesGrilla.push(totalEj);
+    // Etiquetas de jornada: todas si entran cómodas, si no cada N (siempre mostrando la primera y la última).
+    const pasoEtiqueta = n <= 10 ? 1 : Math.ceil(n / 8);
     return React.createElement("div", { className: "space-y-1.5" },
-        React.createElement("svg", { viewBox: `0 0 ${W} ${H}`, className: "w-full", style: { maxHeight: 190, display: "block" } },
-            React.createElement("line", { x1: padL, y1: yAt(1), x2: W - padR, y2: yAt(1), stroke: "#e4e4e4", strokeWidth: 1, strokeDasharray: "4 3" }),
-            React.createElement("line", { x1: padL, y1: yAt(totalEj), x2: W - padR, y2: yAt(totalEj), stroke: "#e4e4e4", strokeWidth: 1, strokeDasharray: "4 3" }),
-            React.createElement("text", { x: 1, y: yAt(1) + 3, fontSize: 9, fill: "#a1a1aa" }, "1\u00B0"),
-            React.createElement("text", { x: 1, y: yAt(totalEj) + 3, fontSize: 9, fill: "#a1a1aa" }, totalEj + "\u00B0"),
-            React.createElement("polyline", { points: puntos, fill: "none", stroke: color || "#B4BC00", strokeWidth: 2.5, strokeLinejoin: "round", strokeLinecap: "round" }),
-            historial.map((h, i) => React.createElement("circle", { key: i, cx: xAt(i), cy: yAt(h.posicion), r: 3, fill: color || "#B4BC00" })),
-            React.createElement("circle", { cx: xAt(n - 1), cy: yAt(actual), r: 4.5, fill: "#fff", stroke: color || "#B4BC00", strokeWidth: 2 })),
-        React.createElement("div", { className: "flex justify-between text-[10px] text-zinc-400 px-0.5" },
-            React.createElement("span", null, `J${historial[0].jornadaNumero}`),
-            React.createElement("span", { className: "font-semibold text-zinc-500" }, `Mejor: ${mejor}\u00B0 \u00B7 Peor: ${peor}\u00B0 \u00B7 Actual: ${actual}\u00B0`),
-            React.createElement("span", null, `J${historial[n - 1].jornadaNumero}`)));
+        React.createElement("svg", { viewBox: `0 0 ${W} ${H}`, className: "w-full", style: { maxHeight: 220, display: "block" } },
+            zona > 0 && zona < totalEj && React.createElement("rect", { x: padL, y: yAt(1) - 4, width: W - padL - padR, height: (yAt(zona) - yAt(1)) + 8, fill: "#8F9500", opacity: 0.08 }),
+            posicionesGrilla.map((p) => React.createElement("g", { key: p },
+                React.createElement("line", { x1: padL, y1: yAt(p), x2: W - padR, y2: yAt(p), stroke: "#e4e4e4", strokeWidth: 1, strokeDasharray: "4 3" }),
+                React.createElement("text", { x: 1, y: yAt(p) + 3, fontSize: 9, fill: "#a1a1aa" }, p + "\u00B0"))),
+            React.createElement("polyline", { points: puntos, fill: "none", stroke: col, strokeWidth: 2.5, strokeLinejoin: "round", strokeLinecap: "round" }),
+            historial.map((h, i) => React.createElement("circle", { key: i, cx: xAt(i), cy: yAt(h.posicion), r: i === n - 1 ? 4.5 : 3, fill: i === n - 1 ? "#fff" : col, stroke: i === n - 1 ? col : "none", strokeWidth: i === n - 1 ? 2 : 0 },
+                React.createElement("title", null, `Jornada ${h.jornadaNumero}: ${h.posicion}\u00B0 lugar`))),
+            historial.map((h, i) => (i === 0 || i === n - 1 || i % pasoEtiqueta === 0) && React.createElement("text", { key: `lbl-${i}`, x: xAt(i), y: H - 4, fontSize: 9, fill: "#a1a1aa", textAnchor: i === 0 ? "start" : i === n - 1 ? "end" : "middle" }, `J${h.jornadaNumero}`))),
+        React.createElement("div", { className: "flex justify-between items-center text-[10px] px-0.5" },
+            zona > 0 && zona < totalEj ? React.createElement("span", { className: "flex items-center gap-1 text-zinc-400" }, React.createElement("span", { className: "inline-block w-2 h-2 rounded-sm", style: { background: "#8F9500", opacity: 0.35 } }), `Zona de clasificaci\u00F3n (top ${zona})`) : React.createElement("span", null),
+            React.createElement("span", { className: "font-semibold text-zinc-500" }, `Mejor: ${mejor}\u00B0 \u00B7 Peor: ${peor}\u00B0 \u00B7 Actual: ${actual}\u00B0`)));
+}
+// Igual que GraficoPosiciones pero superpone dos equipos en el mismo eje, para el modal de comparación.
+// El eje X se alinea por número real de jornada (no por índice) para que ambas líneas queden comparables
+// aunque a alguno le falten fechas jugadas.
+function GraficoPosicionesComparativo({ historialA, historialB, totalEquipos, nombreA, nombreB, colorA, colorB }) {
+    const hayA = historialA && historialA.length > 0, hayB = historialB && historialB.length > 0;
+    if ((!hayA || historialA.length < 2) && (!hayB || historialB.length < 2)) {
+        return React.createElement("div", { className: "text-xs text-zinc-500 text-center py-6" }, "Se necesitan al menos 2 jornadas jugadas entre ambos equipos para graficar.");
+    }
+    const todasJornadas = [...(historialA || []), ...(historialB || [])].map((h) => h.jornadaNumero);
+    const minJ = Math.min(...todasJornadas), maxJ = Math.max(...todasJornadas);
+    const W = 600, H = 210, padL = 26, padR = 10, padT = 10, padB = 20;
+    const totalEj = Math.max(2, totalEquipos || 2);
+    const xAt = (jn) => padL + (maxJ === minJ ? 0 : ((jn - minJ) * (W - padL - padR)) / (maxJ - minJ));
+    const yAt = (pos) => padT + ((pos - 1) * (H - padT - padB)) / (totalEj - 1);
+    const pasoGrilla = totalEj <= 12 ? 1 : Math.ceil(totalEj / 8);
+    const posicionesGrilla = [];
+    for (let p = 1; p <= totalEj; p += pasoGrilla) posicionesGrilla.push(p);
+    if (posicionesGrilla[posicionesGrilla.length - 1] !== totalEj) posicionesGrilla.push(totalEj);
+    const linea = (historial, color, nombre) => !historial || historial.length < 2 ? null : React.createElement("g", { key: nombre },
+        React.createElement("polyline", { points: historial.map((h) => `${xAt(h.jornadaNumero)},${yAt(h.posicion)}`).join(" "), fill: "none", stroke: color, strokeWidth: 2.5, strokeLinejoin: "round", strokeLinecap: "round" }),
+        historial.map((h, i) => React.createElement("circle", { key: i, cx: xAt(h.jornadaNumero), cy: yAt(h.posicion), r: i === historial.length - 1 ? 4.5 : 3, fill: i === historial.length - 1 ? "#fff" : color, stroke: i === historial.length - 1 ? color : "none", strokeWidth: i === historial.length - 1 ? 2 : 0 },
+            React.createElement("title", null, `${nombre} \u2014 Jornada ${h.jornadaNumero}: ${h.posicion}\u00B0 lugar`))));
+    return React.createElement("div", { className: "space-y-1.5" },
+        React.createElement("svg", { viewBox: `0 0 ${W} ${H}`, className: "w-full", style: { maxHeight: 220, display: "block" } },
+            posicionesGrilla.map((p) => React.createElement("g", { key: p },
+                React.createElement("line", { x1: padL, y1: yAt(p), x2: W - padR, y2: yAt(p), stroke: "#e4e4e4", strokeWidth: 1, strokeDasharray: "4 3" }),
+                React.createElement("text", { x: 1, y: yAt(p) + 3, fontSize: 9, fill: "#a1a1aa" }, p + "\u00B0"))),
+            linea(historialA, colorA || "#8F9500", nombreA),
+            linea(historialB, colorB || "#3B82F6", nombreB)),
+        React.createElement("div", { className: "flex items-center justify-center gap-4 text-[10px] font-semibold" },
+            React.createElement("span", { className: "flex items-center gap-1", style: { color: colorA || "#8F9500" } }, React.createElement("span", { className: "inline-block w-2 h-2 rounded-full", style: { background: colorA || "#8F9500" } }), nombreA),
+            React.createElement("span", { className: "flex items-center gap-1", style: { color: colorB || "#3B82F6" } }, React.createElement("span", { className: "inline-block w-2 h-2 rounded-full", style: { background: colorB || "#3B82F6" } }), nombreB)));
 }
 function FilaCalendarioEquipo({ p, equipo, teams }) {
     const rivalId = p.local === equipo.id ? p.visitante : p.local;
@@ -3004,11 +3048,91 @@ function TablaGeneral({ tabla, tablaAnterior, titulo, jornadas, teams }) {
                         React.createElement("td", { colSpan: 10, className: "text-center text-zinc-500 py-6" }, "A\u00F1ade equipos para ver la tabla.")))))));
 }
 // Envoltorio de la pestaña "Tabla": Apertura / Clausura / General / Liguilla.
+// Fila de una métrica dentro del modal de comparación: dos valores enfrentados con el label al centro,
+// resaltando en verde oliva (color de marca) el valor que va ganando esa métrica en particular.
+// mejorEsMayor=false se usa para GC (goles en contra), donde menos es mejor.
+function FilaComparacion({ label, valorA, valorB, mejorEsMayor }) {
+    const esMayor = mejorEsMayor == null ? true : mejorEsMayor;
+    const a = typeof valorA === "number" ? valorA : null;
+    const b = typeof valorB === "number" ? valorB : null;
+    let ganaA = false, ganaB = false;
+    if (a !== null && b !== null && a !== b) {
+        ganaA = esMayor ? a > b : a < b;
+        ganaB = esMayor ? b > a : b < a;
+    }
+    return React.createElement("div", { className: "grid items-center py-1.5 row-line", style: { gridTemplateColumns: "1fr auto 1fr" } },
+        React.createElement("div", { className: `text-right text-sm font-black ${ganaA ? "text-[#8F9500]" : "text-zinc-700"}` }, valorA == null ? "\u2014" : valorA),
+        React.createElement("div", { className: "text-[10px] font-bold text-zinc-400 px-3 text-center shrink-0" }, label),
+        React.createElement("div", { className: `text-left text-sm font-black ${ganaB ? "text-[#8F9500]" : "text-zinc-700"}` }, valorB == null ? "\u2014" : valorB));
+}
+// Modal para comparar dos equipos cara a cara: estadísticas de la tabla general, posición actual,
+// historial de enfrentamientos directos (H2H), forma reciente y evolución de posición superpuesta.
+// Los selects de cada lado excluyen al equipo ya elegido del otro lado para no poder comparar un equipo consigo mismo.
+function CompararEquiposModal({ teams, tabla, jornadas, totalEquipos, onClose }) {
+    const idsOrdenados = tabla.map((t) => t.id);
+    const [equipoAId, setEquipoAId] = useState(idsOrdenados[0] || (teams[0] && teams[0].id));
+    const [equipoBId, setEquipoBId] = useState(idsOrdenados[1] || (teams[1] && teams[1].id));
+    const filaTabla = (id) => tabla.find((t) => t.id === id) || null;
+    const equipo = (id) => teams.find((t) => t.id === id) || null;
+    const posicion = (id) => { const i = idsOrdenados.indexOf(id); return i === -1 ? null : i + 1; };
+    const rowA = filaTabla(equipoAId), rowB = filaTabla(equipoBId);
+    const eqA = equipo(equipoAId), eqB = equipo(equipoBId);
+    const historialA = useMemo(() => equipoAId ? historialPosicionEquipo(teams, jornadas, equipoAId) : [], [teams, jornadas, equipoAId]);
+    const historialB = useMemo(() => equipoBId ? historialPosicionEquipo(teams, jornadas, equipoBId) : [], [teams, jornadas, equipoBId]);
+    const formaA = useMemo(() => equipoAId ? formaRecienteEquipo(jornadas, equipoAId, 5) : [], [jornadas, equipoAId]);
+    const formaB = useMemo(() => equipoBId ? formaRecienteEquipo(jornadas, equipoBId, 5) : [], [jornadas, equipoBId]);
+    const h2h = useMemo(() => (equipoAId && equipoBId) ? historialH2H(equipoAId, equipoBId, jornadas) : null, [equipoAId, equipoBId, jornadas]);
+    const Selector = (valor, onChange, excluirId) => React.createElement("select", { value: valor || "", onChange: (e) => onChange(e.target.value), className: "text-sm font-bold border rounded-lg px-2 py-1.5 w-full" },
+        teams.filter((t) => t.id !== excluirId).map((t) => React.createElement("option", { key: t.id, value: t.id }, t.nombre)));
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet sheet-lg", onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex justify-between items-center mb-3" },
+                React.createElement("span", { className: "font-black text-lg" }, "\u2696\uFE0F Comparar equipos"),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100 shrink-0" }, React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement("div", { className: "grid grid-cols-2 gap-3 mb-3" },
+                Selector(equipoAId, setEquipoAId, equipoBId),
+                Selector(equipoBId, setEquipoBId, equipoAId)),
+            React.createElement("div", { className: "flex items-center justify-between mb-2" },
+                React.createElement("div", { className: "flex flex-col items-center gap-1 flex-1 min-w-0" },
+                    React.createElement(EscudoFila, { team: eqA, size: 40 }),
+                    React.createElement("span", { className: "text-xs font-black text-center truncate w-full" }, eqA ? eqA.nombre : "\u2014")),
+                React.createElement("span", { className: "text-[11px] font-black text-zinc-300 px-2 shrink-0" }, "VS"),
+                React.createElement("div", { className: "flex flex-col items-center gap-1 flex-1 min-w-0" },
+                    React.createElement(EscudoFila, { team: eqB, size: 40 }),
+                    React.createElement("span", { className: "text-xs font-black text-center truncate w-full" }, eqB ? eqB.nombre : "\u2014"))),
+            React.createElement("div", { className: "card2 p-3 mb-3", style: { background: "#fafaf7" } },
+                React.createElement(FilaComparacion, { label: "POSICI\u00D3N", valorA: posicion(equipoAId), valorB: posicion(equipoBId), mejorEsMayor: false }),
+                React.createElement(FilaComparacion, { label: "PTS", valorA: rowA ? rowA.pts : 0, valorB: rowB ? rowB.pts : 0 }),
+                React.createElement(FilaComparacion, { label: "PJ", valorA: rowA ? rowA.pj : 0, valorB: rowB ? rowB.pj : 0 }),
+                React.createElement(FilaComparacion, { label: "PG", valorA: rowA ? rowA.pg : 0, valorB: rowB ? rowB.pg : 0 }),
+                React.createElement(FilaComparacion, { label: "PE", valorA: rowA ? rowA.pe : 0, valorB: rowB ? rowB.pe : 0 }),
+                React.createElement(FilaComparacion, { label: "PP", valorA: rowA ? rowA.pp : 0, valorB: rowB ? rowB.pp : 0, mejorEsMayor: false }),
+                React.createElement(FilaComparacion, { label: "GF", valorA: rowA ? rowA.gf : 0, valorB: rowB ? rowB.gf : 0 }),
+                React.createElement(FilaComparacion, { label: "GC", valorA: rowA ? rowA.gc : 0, valorB: rowB ? rowB.gc : 0, mejorEsMayor: false }),
+                React.createElement(FilaComparacion, { label: "DG", valorA: rowA ? rowA.dg : 0, valorB: rowB ? rowB.dg : 0 })),
+            React.createElement("div", { className: "mb-3" },
+                React.createElement("div", { className: "text-[10px] font-bold text-zinc-400 uppercase mb-1 text-center" }, "Forma reciente"),
+                React.createElement("div", { className: "flex items-center justify-between px-2" },
+                    React.createElement(FormaBadges, { forma: formaA, teams: teams, size: 22 }),
+                    React.createElement(FormaBadges, { forma: formaB, teams: teams, size: 22 }))),
+            h2h && h2h.totalPJ > 0 && React.createElement("div", { className: "card2 p-3 mb-3 text-center" },
+                React.createElement("div", { className: "text-[10px] font-bold text-zinc-400 uppercase mb-1" }, `Enfrentamientos directos (${h2h.totalPJ})`),
+                React.createElement("div", { className: "text-sm font-black" }, `${h2h.victoriasA} \u2013 ${h2h.empates} \u2013 ${h2h.victoriasB}`),
+                React.createElement("div", { className: "text-[11px] text-zinc-500" }, `Goles: ${h2h.golesA} \u2013 ${h2h.golesB}`)),
+            h2h && h2h.totalPJ === 0 && React.createElement("div", { className: "text-xs text-zinc-500 text-center mb-3" }, "Todav\u00EDa no se enfrentaron en las jornadas jugadas."),
+            React.createElement("div", { className: "card2 p-3", style: { background: "#fafaf7" } },
+                React.createElement("div", { className: "text-[10px] font-bold text-zinc-400 uppercase mb-1" }, "Evoluci\u00F3n en la tabla"),
+                React.createElement(GraficoPosicionesComparativo, { historialA: historialA, historialB: historialB, totalEquipos: totalEquipos || teams.length, nombreA: eqA ? eqA.nombre : "Equipo A", nombreB: eqB ? eqB.nombre : "Equipo B", colorA: "#8F9500", colorB: "#3B82F6" }))));
+}
 function TablaTabs({ teams, players, tablaApertura, tablaClausura, tablaGeneral, tablaAperturaAnterior, tablaClausuraAnterior, tablaGeneralAnterior, fases, setFases, setTab, setFaseActiva }) {
     const [sub, setSub] = usePersistedState("tablaSub", "apertura");
+    const [comparando, setComparando] = useState(false);
     const OPCIONES = [["apertura", "Apertura"], ["clausura", "Clausura"], ["general", "General"], ["liguilla", "\uD83C\uDFC6 Liguilla"]];
     return (React.createElement("div", { className: "space-y-3" },
-        React.createElement("div", { className: "tabs-even" }, OPCIONES.map(([val, label]) => React.createElement("button", { key: val, type: "button", onClick: () => setSub(val), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: sub === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label))),
+        comparando && teams.length >= 2 && React.createElement(CompararEquiposModal, { teams: teams, tabla: tablaGeneral, jornadas: [...fases.apertura, ...fases.clausura], totalEquipos: teams.length, onClose: () => setComparando(false) }),
+        React.createElement("div", { className: "flex items-center justify-between gap-2 flex-wrap" },
+            React.createElement("div", { className: "tabs-even flex-1" }, OPCIONES.map(([val, label]) => React.createElement("button", { key: val, type: "button", onClick: () => setSub(val), className: "text-xs font-bold px-3 py-1.5 rounded-full", style: sub === val ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, label))),
+            teams.length >= 2 && React.createElement("button", { type: "button", onClick: () => setComparando(true), className: "text-xs font-bold px-3 py-1.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 shrink-0" }, "\u2696\uFE0F Comparar")),
         sub === "apertura" && React.createElement(TablaGeneral, { tabla: tablaApertura, tablaAnterior: tablaAperturaAnterior, titulo: "Tabla Apertura", jornadas: fases.apertura, teams: teams }),
         sub === "clausura" && React.createElement(TablaGeneral, { tabla: tablaClausura, tablaAnterior: tablaClausuraAnterior, titulo: "Tabla Clausura", jornadas: fases.clausura, teams: teams }),
         sub === "general" && React.createElement(TablaGeneral, { tabla: tablaGeneral, tablaAnterior: tablaGeneralAnterior, titulo: "Tabla General (Apertura + Clausura)", jornadas: [...fases.apertura, ...fases.clausura], teams: teams }),
