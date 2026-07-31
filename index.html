@@ -1252,6 +1252,65 @@ function ultimaJornadaJugada(jornadas) {
     });
     return max;
 }
+// ---------- Forma reciente / historial de posiciones ----------
+// Todos los partidos (jugados o no) de un equipo dentro de las jornadas dadas, en el orden en que aparecen
+// esas jornadas (mismo criterio "cronológico" que ya usa el resto de la app, p. ej. en el Head-to-Head).
+function partidosDeEquipoOrdenados(jornadas, equipoId) {
+    const partidos = [];
+    (jornadas || []).forEach((j) => {
+        (j.partidos || []).forEach((p) => {
+            if (p.local === equipoId || p.visitante === equipoId)
+                partidos.push({ ...p, jornadaNumero: j.numero });
+        });
+    });
+    return partidos;
+}
+// Últimos N resultados JUGADOS de un equipo (G/E/P), del más viejo al más reciente.
+function formaRecienteEquipo(jornadas, equipoId, n) {
+    if (n === void 0) { n = 5; }
+    const jugados = partidosDeEquipoOrdenados(jornadas, equipoId).filter((p) => p.jugado);
+    return jugados.slice(-n).map((p) => {
+        const esLocal = p.local === equipoId;
+        const golesA = esLocal ? p.golesLocal : p.golesVisitante;
+        const golesC = esLocal ? p.golesVisitante : p.golesLocal;
+        const rivalId = esLocal ? p.visitante : p.local;
+        const resultado = golesA > golesC ? "G" : golesA < golesC ? "P" : "E";
+        return { resultado, golesA, golesC, rivalId, jornadaNumero: p.jornadaNumero };
+    });
+}
+// Evolución de la posición en la tabla de un equipo, recalculando la tabla acumulada hasta cada jornada
+// jugada (dentro del mismo conjunto de jornadas que se le pasa, p. ej. solo Apertura, o Apertura+Clausura).
+function historialPosicionEquipo(teams, jornadas, equipoId) {
+    const numeros = [...new Set((jornadas || []).filter((j) => (j.partidos || []).some((p) => p.jugado)).map((j) => j.numero))].sort((a, b) => a - b);
+    return numeros
+        .map((numero) => {
+        const tablaHastaAqui = calcularTabla(teams, jornadas.filter((j) => j.numero <= numero));
+        const idx = tablaHastaAqui.findIndex((t) => t.id === equipoId);
+        return { jornadaNumero: numero, posicion: idx === -1 ? null : idx + 1 };
+    })
+        .filter((h) => h.posicion !== null);
+}
+// Forma reciente de un JUGADOR: se apoya en la forma de su equipo (últimos N partidos jugados) y suma su
+// aporte personal (goles, asistencias, tarjetas) leyendo el matchData guardado de esos mismos partidos.
+function formaRecienteJugador(jornadas, jugador, n) {
+    if (n === void 0) { n = 5; }
+    if (!(jugador === null || jugador === void 0 ? void 0 : jugador.equipoId))
+        return { forma: [], resumen: null };
+    const forma = formaRecienteEquipo(jornadas, jugador.equipoId, n);
+    const partidos = partidosDeEquipoOrdenados(jornadas, jugador.equipoId).filter((p) => p.jugado).slice(-n);
+    const resumen = { goles: 0, asistencias: 0, amarillas: 0, rojas: 0, partidosConDatos: 0 };
+    partidos.forEach((p) => {
+        const md = p.matchData;
+        if (!md)
+            return;
+        resumen.partidosConDatos++;
+        resumen.goles += (md.eventos || []).filter((e) => e.jugador === jugador.id && !e.propia).length;
+        resumen.asistencias += (md.eventos || []).filter((e) => e.asistencia === jugador.id).length;
+        resumen.amarillas += (md.tarjetas || []).filter((t) => t.jugador === jugador.id && t.tipo === "amarilla").length;
+        resumen.rojas += (md.tarjetas || []).filter((t) => t.jugador === jugador.id && t.tipo === "roja").length;
+    });
+    return { forma, resumen };
+}
 // Tabla tal como estaba ANTES de la última jornada jugada (excluye esa jornada completa de cada fase),
 // para poder compararla con la tabla actual y mostrar las flechas de cambio de posición.
 function calcularTablaAnterior(teams, gruposDeJornadas) {
@@ -1850,7 +1909,7 @@ function TorneoApp() {
                 ["calendario", "partido", "xiideal"].includes(tab) && React.createElement(FaseSwitcher, { faseActiva: faseActiva, setFaseActiva: setFaseActiva, liguillaDisponible: fases.liguilla.length > 0 }),
                 tab === "dashboard" && React.createElement(Dashboard, { teams: teams, players: players, fases: fases, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, setTab: goTab, diasDesdeBackup: diasDesdeBackup }),
                 tab === "equipos" && !selectedTeamId && React.createElement(EquiposLista, { teams: teams, setTeams: setTeams, players: players, onOpen: setSelectedTeamId }),
-                tab === "equipos" && selectedTeamId && React.createElement(EquipoDetalle, { teamId: selectedTeamId, teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, onBack: () => setSelectedTeamId(null) }),
+                tab === "equipos" && selectedTeamId && React.createElement(EquipoDetalle, { teamId: selectedTeamId, teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, onBack: () => setSelectedTeamId(null), todasLasJornadas: todasLasJornadas }),
                 tab === "tabla" && React.createElement(TablaTabs, { teams: teams, players: players, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, tablaAperturaAnterior: tablaAperturaAnterior, tablaClausuraAnterior: tablaClausuraAnterior, tablaGeneralAnterior: tablaGeneralAnterior, fases: fases, setFases: setFases, setTab: goTab, setFaseActiva: setFaseActiva }),
                 tab === "calendario" && React.createElement(Calendario, { key: faseActiva, teams: teams, jornadas: jornadasFase, setJornadas: setJornadasFase, setTab: goTab, players: players, setPlayers: setPlayers, setTeams: setTeams }),
                 tab === "partido" && React.createElement(JugarPartido, { key: faseActiva, teams: teams, players: players, setPlayers: setPlayers, jornadas: jornadasFase, setJornadas: setJornadasFase, setTeams: setTeams, draft: draftPartido, setDraft: setDraftPartido, faseActiva: faseActiva, todasLasJornadas: todasLasJornadas }),
@@ -1858,7 +1917,7 @@ function TorneoApp() {
                 tab === "xiidealtorneo" && React.createElement(XiIdealTorneo, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players, vecesXi: vecesXi, xiTorneo: xiTorneo, setXiTorneo: setXiTorneo }),
                 tab === "premios" && React.createElement(PremiosView, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players }),
                 tab === "mercado" && React.createElement(Mercado, { teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, transfers: transfers, setTransfers: setTransfers, avisos: avisos, setAvisos: setAvisos, abierto: mercadoAbierto, aperturaCompleta: aperturaCompleta, clausuraCompleta: clausuraCompleta, clausuraIniciada: clausuraIniciada, liguillaIniciada: liguillaIniciada }),
-                tab === "jugadores" && React.createElement(JugadoresView, { teams: teams, players: players, setPlayers: setPlayers }),
+                tab === "jugadores" && React.createElement(JugadoresView, { teams: teams, players: players, setPlayers: setPlayers, todasLasJornadas: todasLasJornadas }),
                 tab === "rankings" && React.createElement(Rankings, { players: players, teams: teams, jornadas: todasLasJornadas }),
                 tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
                 tab === "sanciones" && React.createElement(Sanciones, { players: players, setPlayers: setPlayers, teams: teams }),
@@ -2327,7 +2386,7 @@ function WishlistCard({ team, teams, players, setTeams }) {
                     })),
                 React.createElement("button", { onClick: () => setAgregando(false), className: "text-xs px-3 py-1.5 rounded-full font-semibold bg-zinc-100 text-zinc-600" }, "Cancelar")) : (wishlistIds.length < MAX_WISHLIST && React.createElement("button", { onClick: () => setAgregando(true), className: "text-xs px-3 py-1.5 rounded-full font-semibold", style: { background: "#8F9500", color: "#fff" } }, "\u2795 A\u00F1adir a la Lista de Deseos"))));
 }
-function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack }) {
+function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack, todasLasJornadas }) {
     const team = teams.find((t) => t.id === teamId);
     const [editandoEquipo, setEditandoEquipo] = useState(false);
     const [nombreNuevo, setNombreNuevo] = useState("");
@@ -2336,6 +2395,7 @@ function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack })
     if (!team)
         return null;
     const squad = players.filter((p) => p.equipoId === teamId).sort((a, b) => a.dorsal - b.dorsal);
+    const formaEquipo = formaRecienteEquipo(todasLasJornadas || [], teamId, 5);
     const updateTeam = (patch) => setTeams(teams.map((t) => (t.id === teamId ? { ...t, ...patch } : t)));
     const removeTeam = () => {
         if (!confirm(`¿Eliminar "${team.nombre}"? Sus jugadores quedarán libres.`))
@@ -2407,6 +2467,9 @@ function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack })
                 React.createElement("button", { onClick: removeTeam, className: "text-xs text-red-500 flex items-center gap-1 hover:text-red-700" },
                     React.createElement(Icon, { size: 13 }, "\uD83D\uDDD1\uFE0F"),
                     " Eliminar equipo"))),
+        React.createElement("div", { className: "card2 p-3 flex items-center justify-between gap-2 flex-wrap" },
+            React.createElement("span", { className: "text-[10px] font-bold text-zinc-400 uppercase" }, "Forma reciente"),
+            React.createElement(FormaBadges, { forma: formaEquipo, teams: teams, size: 22 })),
         React.createElement(WishlistCard, { team: team, teams: teams, players: players, setTeams: setTeams }),
         React.createElement("div", { className: "card2" },
             React.createElement("div", { className: "section-header px-4 py-2.5 flex items-center justify-between gap-2" },
@@ -2455,12 +2518,13 @@ function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack })
                             p.posicion === "PT" && ` \uD83E\uDDE4${p.golesRecibidos || 0}`))))),
                 !squad.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, "Este equipo no tiene jugadores. A\u00F1ade el primero arriba."))),
         editPlayer && (React.createElement(PlayerSheet, { player: editPlayer, onClose: () => setEditPlayerId(null), onChange: (patch) => setPlayers(players.map((p) => { if (p.id !== editPlayer.id)
-                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); } })),
+                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); }, jornadas: todasLasJornadas, teams: teams })),
         mostrarFinanzas && React.createElement(FinanzasClubSheet, { team: team, onClose: () => setMostrarFinanzas(false) })));
 }
-function PlayerSheet({ player: p, onClose, onChange, onRemove }) {
+function PlayerSheet({ player: p, onClose, onChange, onRemove, jornadas, teams }) {
     const scoreProm = avg(p.scores);
     const comodin = isComodin(p);
+    const { forma: formaJugador, resumen: resumenJugador } = formaRecienteJugador(jornadas || [], p, 5);
     const liberar = () => {
         if (!confirm(`¿Marcar a ${p.nombre} como Agente Libre? Quedará sin equipo y disponible para cualquiera.`))
             return;
@@ -2516,6 +2580,10 @@ function PlayerSheet({ player: p, onClose, onChange, onRemove }) {
                     React.createElement(NumberField, { min: 0, value: p.jornadasLesionado || 0, onCommit: (n) => onChange({ jornadasLesionado: n }) })),
                 React.createElement(Field, { label: "Valor de mercado" },
                     React.createElement("input", { disabled: true, value: fmtMoney(calcValorMercado(p)) }))),
+            p.equipoId && React.createElement("div", { className: "mt-3 pt-3 border-t border-zinc-100 space-y-1.5" },
+                React.createElement("div", { className: "text-[10px] font-bold text-zinc-400 uppercase" }, "Forma reciente del equipo"),
+                React.createElement(FormaBadges, { forma: formaJugador, teams: teams, size: 20 }),
+                resumenJugador && resumenJugador.partidosConDatos > 0 && React.createElement("div", { className: "text-xs text-zinc-500" }, `En esos ${resumenJugador.partidosConDatos} partido${resumenJugador.partidosConDatos === 1 ? "" : "s"}: \u26BD ${resumenJugador.goles} \u00B7 \uD83C\uDD70\uFE0F ${resumenJugador.asistencias} \u00B7 \uD83D\uDFE8 ${resumenJugador.amarillas} \u00B7 \uD83D\uDFE5 ${resumenJugador.rojas}`)),
             React.createElement("div", { className: "flex justify-between items-center mt-4 pt-3 border-t border-zinc-100" },
                 React.createElement("button", { onClick: onRemove, className: "flex items-center gap-1 text-xs px-3 py-2 rounded-lg bg-red-50 text-red-600 hover:bg-red-100" },
                     React.createElement(Icon, { size: 13 }, "\uD83D\uDDD1\uFE0F"),
@@ -2649,7 +2717,7 @@ function ComparadorJugadoresModal({ players, teams, onClose }) {
 // ---------- Jugadores: lista global con filtros de búsqueda ----------
 // Lista a todos los jugadores del torneo (de cualquier equipo, más los agentes libres) y permite acotarla
 // por nombre, posición, rango de GRL, rango de precio de mercado y si es agente libre o de un equipo puntual.
-function JugadoresView({ teams, players, setPlayers }) {
+function JugadoresView({ teams, players, setPlayers, todasLasJornadas }) {
     const [busqueda, setBusqueda] = useState("");
     const [filtroPos, setFiltroPos] = useState("");
     const [grlMin, setGrlMin] = useState("");
@@ -2753,7 +2821,7 @@ function JugadoresView({ teams, players, setPlayers }) {
                         p.posicion === "PT" && ` \uD83E\uDDE4${p.golesRecibidos || 0}`)))); }),
             !filtrados.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, players.length ? "Ning\u00FAn jugador coincide con estos filtros." : "A\u00FAn no hay jugadores cargados.")),
         editPlayer && (React.createElement(PlayerSheet, { player: editPlayer, onClose: () => setEditPlayerId(null), onChange: (patch) => setPlayers(players.map((p) => { if (p.id !== editPlayer.id)
-                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); } })),
+                return p; const np = { ...p, ...patch }; np.valorMercado = calcValorMercado(np); return np; })), onRemove: () => { setPlayers(players.filter((p) => p.id !== editPlayer.id)); setEditPlayerId(null); }, jornadas: todasLasJornadas, teams: teams })),
         comparando && React.createElement(ComparadorJugadoresModal, { players: players, teams: teams, onClose: () => setComparando(false) })));
 }
 // Input numérico "amigable": mientras escribís podés borrar o dejarlo vacío sin que salte a 0/mín/máx.
@@ -2804,6 +2872,45 @@ function FlechaPosicion({ actual, anterior }) {
     return React.createElement("span", { className: "text-red-500 text-[10px] leading-none shrink-0", title: `Baj\u00F3 ${actual - anterior} posici\u00F3n(es)` }, "\u25BC");
 }
 // Fila de un partido dentro del calendario de un equipo (usado en la miniventana al tocar un equipo en la Tabla).
+// Bolitas de "forma reciente" (G/E/P) de un equipo, la más vieja a la izquierda y la más reciente a la
+// derecha. Cada una tiene un tooltip con el detalle del partido (jornada, rival, resultado).
+function FormaBadges({ forma, teams, size }) {
+    if (!forma || !forma.length)
+        return React.createElement("span", { className: "text-[11px] text-zinc-400" }, "Sin partidos jugados todav\u00EDa.");
+    const nombreRival = (id) => { var _a; return ((_a = (teams || []).find((t) => t.id === id)) === null || _a === void 0 ? void 0 : _a.nombre) || "\u2014"; };
+    const estilos = { G: { background: "#DFF3E1", color: "#1E8E3E" }, E: { background: "#F1F1EA", color: "#71717a" }, P: { background: "#FDE2E2", color: "#C0392B" } };
+    const nombreResultado = { G: "Ganado", E: "Empatado", P: "Perdido" };
+    return React.createElement("div", { className: "flex items-center gap-1" }, forma.map((f, i) => React.createElement("span", { key: i, title: `J${f.jornadaNumero}: ${nombreResultado[f.resultado]} ${f.golesA}-${f.golesC} vs ${nombreRival(f.rivalId)}`, className: "inline-flex items-center justify-center rounded-full font-black shrink-0", style: { width: size || 20, height: size || 20, fontSize: (size || 20) >= 20 ? 10 : 9, ...estilos[f.resultado] } }, f.resultado)));
+}
+// Gráfico de línea (SVG puro, sin librerías) con la evolución de la posición en la tabla, jornada a jornada.
+// El eje Y está invertido (1° arriba) porque así se lee una tabla de posiciones.
+function GraficoPosiciones({ historial, totalEquipos, color }) {
+    if (!historial || historial.length < 2) {
+        return React.createElement("div", { className: "text-xs text-zinc-500 text-center py-6" }, "Se necesitan al menos 2 jornadas jugadas para graficar la evoluci\u00F3n en la tabla.");
+    }
+    const W = 600, H = 170, padL = 24, padR = 10, padT = 10, padB = 8;
+    const n = historial.length;
+    const totalEj = Math.max(2, totalEquipos || n);
+    const xAt = (i) => padL + (n === 1 ? 0 : (i * (W - padL - padR)) / (n - 1));
+    const yAt = (pos) => padT + ((pos - 1) * (H - padT - padB)) / (totalEj - 1);
+    const puntos = historial.map((h, i) => `${xAt(i)},${yAt(h.posicion)}`).join(" ");
+    const mejor = Math.min(...historial.map((h) => h.posicion));
+    const peor = Math.max(...historial.map((h) => h.posicion));
+    const actual = historial[n - 1].posicion;
+    return React.createElement("div", { className: "space-y-1.5" },
+        React.createElement("svg", { viewBox: `0 0 ${W} ${H}`, className: "w-full", style: { maxHeight: 190, display: "block" } },
+            React.createElement("line", { x1: padL, y1: yAt(1), x2: W - padR, y2: yAt(1), stroke: "#e4e4e4", strokeWidth: 1, strokeDasharray: "4 3" }),
+            React.createElement("line", { x1: padL, y1: yAt(totalEj), x2: W - padR, y2: yAt(totalEj), stroke: "#e4e4e4", strokeWidth: 1, strokeDasharray: "4 3" }),
+            React.createElement("text", { x: 1, y: yAt(1) + 3, fontSize: 9, fill: "#a1a1aa" }, "1\u00B0"),
+            React.createElement("text", { x: 1, y: yAt(totalEj) + 3, fontSize: 9, fill: "#a1a1aa" }, totalEj + "\u00B0"),
+            React.createElement("polyline", { points: puntos, fill: "none", stroke: color || "#B4BC00", strokeWidth: 2.5, strokeLinejoin: "round", strokeLinecap: "round" }),
+            historial.map((h, i) => React.createElement("circle", { key: i, cx: xAt(i), cy: yAt(h.posicion), r: 3, fill: color || "#B4BC00" })),
+            React.createElement("circle", { cx: xAt(n - 1), cy: yAt(actual), r: 4.5, fill: "#fff", stroke: color || "#B4BC00", strokeWidth: 2 })),
+        React.createElement("div", { className: "flex justify-between text-[10px] text-zinc-400 px-0.5" },
+            React.createElement("span", null, `J${historial[0].jornadaNumero}`),
+            React.createElement("span", { className: "font-semibold text-zinc-500" }, `Mejor: ${mejor}\u00B0 \u00B7 Peor: ${peor}\u00B0 \u00B7 Actual: ${actual}\u00B0`),
+            React.createElement("span", null, `J${historial[n - 1].jornadaNumero}`)));
+}
 function FilaCalendarioEquipo({ p, equipo, teams }) {
     const rivalId = p.local === equipo.id ? p.visitante : p.local;
     const rival = teams.find((t) => t.id === rivalId);
@@ -2835,6 +2942,8 @@ function EquipoCalendarioSheet({ equipo, jornadas, teams, onClose }) {
     });
     partidos.sort((a, b) => (a.jornadaNumero || 0) - (b.jornadaNumero || 0));
     const jugados = partidos.filter((p) => p.jugado);
+    const forma = formaRecienteEquipo(jornadas, equipo.id, 5);
+    const historialPos = historialPosicionEquipo(teams, jornadas, equipo.id);
     return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
         React.createElement("div", { className: "sheet", onClick: (e) => e.stopPropagation() },
             React.createElement("div", { className: "flex justify-between items-center mb-1" },
@@ -2844,6 +2953,12 @@ function EquipoCalendarioSheet({ equipo, jornadas, teams, onClose }) {
                 React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100 shrink-0" },
                     React.createElement(Icon, { size: 16 }, "\u2715"))),
             React.createElement("div", { className: "text-xs text-zinc-500 mb-2" }, `${jugados.length} jugados de ${partidos.length} partidos`),
+            React.createElement("div", { className: "mb-3" },
+                React.createElement("div", { className: "text-[10px] font-bold text-zinc-400 uppercase mb-1" }, "Forma reciente"),
+                React.createElement(FormaBadges, { forma: forma, teams: teams, size: 24 })),
+            React.createElement("div", { className: "card2 p-3 mb-3", style: { background: "#fafaf7" } },
+                React.createElement("div", { className: "text-[10px] font-bold text-zinc-400 uppercase mb-1" }, "Historial de posici\u00F3n en la tabla"),
+                React.createElement(GraficoPosiciones, { historial: historialPos, totalEquipos: (teams || []).length })),
             React.createElement("div", { className: "divide-y divide-zinc-100" }, partidos.map((p) => React.createElement(FilaCalendarioEquipo, { key: p.id, p: p, equipo: equipo, teams: teams }))),
             !partidos.length && React.createElement("div", { className: "text-center text-zinc-500 py-6 text-sm" }, "Sin partidos programados en esta fase.")));
 }
@@ -2867,7 +2982,8 @@ function TablaGeneral({ tabla, tablaAnterior, titulo, jornadas, teams }) {
                         React.createElement("th", null, "GF"),
                         React.createElement("th", null, "GC"),
                         React.createElement("th", null, "DG"),
-                        React.createElement("th", null, "PTS"))),
+                        React.createElement("th", null, "PTS"),
+                        React.createElement("th", null, "Forma"))),
                 React.createElement("tbody", null,
                     tabla.map((t, i) => (React.createElement("tr", { key: t.id, className: `row-line cursor-pointer hover:bg-zinc-50 ${i < 4 ? "bg-[#F4F7DE]" : ""}`, onClick: () => setEquipoSel(t) },
                         React.createElement("td", { className: "text-center" }, i + 1),
@@ -2882,7 +2998,8 @@ function TablaGeneral({ tabla, tablaAnterior, titulo, jornadas, teams }) {
                         React.createElement("td", { className: "text-center" }, t.gf),
                         React.createElement("td", { className: "text-center" }, t.gc),
                         React.createElement("td", { className: "text-center" }, t.dg),
-                        React.createElement("td", { className: "text-center font-black text-[#8F9500]" }, t.pts)))),
+                        React.createElement("td", { className: "text-center font-black text-[#8F9500]" }, t.pts),
+                        React.createElement("td", { className: "text-center px-2" }, React.createElement(FormaBadges, { forma: formaRecienteEquipo(jornadas, t.id, 5), teams: teams, size: 16 }))))),
                     !tabla.length && React.createElement("tr", null,
                         React.createElement("td", { colSpan: 10, className: "text-center text-zinc-500 py-6" }, "A\u00F1ade equipos para ver la tabla.")))))));
 }
