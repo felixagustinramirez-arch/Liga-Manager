@@ -1,6 +1,6 @@
 // Sube este número cada vez que publiques cambios en index.html
 // para forzar que los usuarios reciban la versión nueva.
-const CACHE_VERSION = 'liga-konami-v1';
+const CACHE_VERSION = 'liga-konami-v2';
 
 const APP_SHELL = [
   './',
