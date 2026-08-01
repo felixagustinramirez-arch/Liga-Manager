@@ -522,15 +522,30 @@
 <div id="root">
   <div style="font-family:sans-serif;padding:24px;color:#555;">Cargando la app…</div>
 <script>
-  window.addEventListener("error", function (e) {
+  function mostrarErrorFatal(titulo, detalle, extra) {
     var root = document.getElementById("root");
     if (root) {
       root.innerHTML =
         '<div style="font-family:monospace;white-space:pre-wrap;padding:20px;color:#b00020;background:#fff3f3;">' +
-        '⚠️ Error al cargar la app:\n\n' + (e.message || e) +
-        '\n\n(Archivo: ' + (e.filename || '?') + ', línea ' + (e.lineno || '?') + ')' +
-        '\n\nSi ves esto justo después de abrir el archivo, revisa tu conexión a internet: la app necesita cargar React desde internet la primera vez.</div>';
+        '⚠️ ' + titulo + ':\n\n' + detalle +
+        (extra ? '\n\n' + extra : '') +
+        '\n\nSi ves esto justo después de abrir el archivo, revisa tu conexión a internet: la app necesita cargar React desde internet la primera vez.' +
+        '\n\n— Info técnica (para reportar): ' + navigator.userAgent + '</div>';
     }
+  }
+  window.addEventListener("error", function (e) {
+    var stack = e.error && e.error.stack ? e.error.stack : "";
+    mostrarErrorFatal(
+      "Error al cargar la app",
+      (e.message || e) + "\n\n(Archivo: " + (e.filename || "?") + ", línea " + (e.lineno || "?") + ", col " + (e.colno || "?") + ")",
+      stack
+    );
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var reason = e.reason;
+    var msg = reason && reason.message ? reason.message : String(reason);
+    var stack = reason && reason.stack ? reason.stack : "";
+    mostrarErrorFatal("Error no controlado (promesa)", msg, stack);
   });
 
 "use strict";
@@ -1741,7 +1756,7 @@ function timestampLocalGuardado() {
     }
 }
 // ---------- App ----------
-function TorneoApp({ authUid }) {
+function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
     const [teams, setTeams] = useState([]);
     const [players, setPlayers] = useState([]);
     const [fases, setFases] = useState({ apertura: [], clausura: [], liguilla: [] });
@@ -2084,7 +2099,7 @@ function TorneoApp({ authUid }) {
                 tab === "rankings" && React.createElement(Rankings, { players: players, teams: teams, jornadas: todasLasJornadas }),
                 tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
                 tab === "sanciones" && React.createElement(Sanciones, { players: players, setPlayers: setPlayers, teams: teams }),
-                tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo, onNuevaTemporada: () => setMostrarNuevaTemporada(true), diasDesdeBackup: diasDesdeBackup, authUid: authUid, syncEstado: syncEstado }),
+                tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo, onNuevaTemporada: () => setMostrarNuevaTemporada(true), diasDesdeBackup: diasDesdeBackup, authUid: authUid, syncEstado: syncEstado, firebaseDisponible: firebaseDisponible, onIrALogin: onIrALogin }),
                 mostrarNuevaTemporada && React.createElement(NuevaTemporadaModal, { teams: teams, players: players, proximoNumero: temporadas.length + 1, onClose: () => setMostrarNuevaTemporada(false), onConfirm: comenzarNuevaTemporada }),
                 tab === "salonfama" && React.createElement(SalonDeLaFama, { temporadas: temporadas })))));
 }
@@ -2263,7 +2278,7 @@ function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaG
                 React.createElement("button", { onClick: () => setTab("tabla"), className: "dash-extra-btn" }, "\uD83D\uDCCA Tabla")))));
 }
 // ---------- Extras ----------
-function Extras({ onExport, onImport, onResetLiga, onResetTodo, onNuevaTemporada, diasDesdeBackup, authUid, syncEstado }) {
+function Extras({ onExport, onImport, onResetLiga, onResetTodo, onNuevaTemporada, diasDesdeBackup, authUid, syncEstado, firebaseDisponible, onIrALogin }) {
     const vencido = diasDesdeBackup === null || diasDesdeBackup >= 7;
     const textoEstado = diasDesdeBackup === null ? "Todav\u00EDa no hiciste ninguna copia." : `\u00DAltimo backup: hace ${diasDesdeBackup} d\u00EDa${diasDesdeBackup === 1 ? "" : "s"}.`;
     const textoSync = { cargando: "Sincronizando…", nube: "Sincronizado \u2601\uFE0F", "sin-conexion": "Sin conexi\u00F3n (usando copia local)", local: "Sin sincronizar (solo en este dispositivo)" }[syncEstado] || "";
@@ -2276,8 +2291,10 @@ function Extras({ onExport, onImport, onResetLiga, onResetTodo, onNuevaTemporada
                 " Sincronizaci\u00F3n entre dispositivos"),
             React.createElement("p", { className: "text-xs font-semibold mb-2", style: { color: colorSync } }, textoSync),
             authUid
-                ? React.createElement("button", { onClick: () => firebase.auth().signOut().then(() => window.location.reload()), className: "text-xs px-3 py-2 rounded-lg font-semibold", style: { background: "#f3f4f6", color: "#444" } }, "Cerrar sesi\u00F3n")
-                : React.createElement("p", { className: "text-xs text-zinc-500" }, "Inicia sesi\u00F3n (cerrando y volviendo a abrir la app) para sincronizar entre tu iPhone, Android y PC.")),
+                ? React.createElement("button", { onClick: () => firebase.auth().signOut().then(() => window.location.reload()).catch(() => window.location.reload()), className: "text-xs px-3 py-2 rounded-lg font-semibold", style: { background: "#f3f4f6", color: "#444" } }, "Cerrar sesi\u00F3n")
+                : firebaseDisponible
+                    ? React.createElement("button", { onClick: onIrALogin, className: "text-xs px-3 py-2 rounded-lg font-semibold", style: { background: "#B4BC00", color: "#fff" } }, "Iniciar sesi\u00F3n")
+                    : React.createElement("p", { className: "text-xs text-zinc-500" }, "La sincronizaci\u00F3n todav\u00EDa no est\u00E1 configurada en esta app (ver CONFIGURAR-SINCRONIZACION.md).")),
         React.createElement("div", { className: "card2 p-4", style: { borderColor: "#d9e0a0" } },
             React.createElement("div", { className: "font-bold mb-1 flex items-center gap-2" },
                 React.createElement(Icon, { size: 16 }, "\uD83C\uDD95"),
@@ -5539,16 +5556,34 @@ function PantallaLogin({ onEntrarSinCuenta }) {
 function AppConSesion() {
     const [user, setUser] = useState(undefined); // undefined = comprobando, null = sin sesión, obj = con sesión
     const [sinCuenta, setSinCuenta] = useState(false);
+    const [fallaAuth, setFallaAuth] = useState(false);
     useEffect(() => {
         if (!firebaseListo()) {
             setUser(null);
             return;
         }
-        const unsub = firebase.auth().onAuthStateChanged((u) => setUser(u));
-        return () => unsub();
+        try {
+            const unsub = firebase.auth().onAuthStateChanged((u) => setUser(u), (err) => {
+                console.warn("Error de Firebase Auth (se continúa sin sincronizar):", err);
+                setFallaAuth(true);
+            });
+            return () => unsub();
+        }
+        catch (e) {
+            console.warn("No se pudo iniciar Firebase Auth (se continúa sin sincronizar):", e);
+            setFallaAuth(true);
+        }
     }, []);
-    if (!firebaseListo() || sinCuenta) {
-        return React.createElement(TorneoApp, { authUid: null });
+    const volverALogin = () => {
+        setSinCuenta(false);
+        setFallaAuth(false);
+    };
+    if (!firebaseListo()) {
+        // Sin configuración de Firebase: la app funciona en modo local, sin opción de iniciar sesión.
+        return React.createElement(TorneoApp, { authUid: null, firebaseDisponible: false });
+    }
+    if (sinCuenta || fallaAuth) {
+        return React.createElement(TorneoApp, { authUid: null, firebaseDisponible: true, onIrALogin: volverALogin });
     }
     if (user === undefined) {
         return React.createElement("div", { style: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#888" } }, "Cargando…");
@@ -5556,7 +5591,7 @@ function AppConSesion() {
     if (user === null) {
         return React.createElement(PantallaLogin, { onEntrarSinCuenta: () => setSinCuenta(true) });
     }
-    return React.createElement(TorneoApp, { authUid: user.uid });
+    return React.createElement(TorneoApp, { authUid: user.uid, firebaseDisponible: true });
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(AppConSesion, null));
 
