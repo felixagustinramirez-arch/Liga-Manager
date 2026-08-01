@@ -1741,7 +1741,7 @@ function timestampLocalGuardado() {
     }
 }
 // ---------- App ----------
-function TorneoApp({ uid }) {
+function TorneoApp({ authUid }) {
     const [teams, setTeams] = useState([]);
     const [players, setPlayers] = useState([]);
     const [fases, setFases] = useState({ apertura: [], clausura: [], liguilla: [] });
@@ -1768,7 +1768,7 @@ function TorneoApp({ uid }) {
     // fue la última exportación (.json) para poder avisar si hace mucho que no se hace una copia.
     const [ultimoBackup, setUltimoBackup] = useState(null);
     // Estado de sincronización con la nube: 'cargando' | 'nube' | 'local' | 'sin-conexion'.
-    const [syncEstado, setSyncEstado] = useState(uid ? "cargando" : "local");
+    const [syncEstado, setSyncEstado] = useState(authUid ? "cargando" : "local");
     const saveTimer = useRef(null);
     const draftSaveTimer = useRef(null);
     const aplicarDatos = (d) => {
@@ -1805,9 +1805,9 @@ function TorneoApp({ uid }) {
         else
             setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
         setLoaded(true);
-        if (uid) {
+        if (authUid) {
             // Compara con la nube y usa lo que esté más actualizado, venga de donde venga.
-            pullCloudData(uid).then((dCloud) => {
+            pullCloudData(authUid).then((dCloud) => {
                 if (cancelado)
                     return;
                 if (dCloud) {
@@ -1823,22 +1823,22 @@ function TorneoApp({ uid }) {
                 }
                 else if (dLocal) {
                     // La nube está vacía pero aquí ya hay datos: los subimos como punto de partida.
-                    pushCloudData(uid, dLocal);
+                    pushCloudData(authUid, dLocal);
                 }
                 setSyncEstado("nube");
             }).catch(() => setSyncEstado("sin-conexion"));
         }
         return () => { cancelado = true; };
-    }, [uid]);
+    }, [authUid]);
     // Si vuelves a esta pestaña/app (por ejemplo, cambiaste de tu PC a tu celular y regresas),
     // revisa si hay datos más nuevos en la nube y los trae.
     useEffect(() => {
-        if (!uid)
+        if (!authUid)
             return;
         const alVolverVisible = () => {
             if (document.visibilityState !== "visible")
                 return;
-            pullCloudData(uid).then((dCloud) => {
+            pullCloudData(authUid).then((dCloud) => {
                 if (!dCloud)
                     return;
                 const tsCloud = dCloud._actualizadoEn || 0;
@@ -1855,7 +1855,7 @@ function TorneoApp({ uid }) {
         };
         document.addEventListener("visibilitychange", alVolverVisible);
         return () => document.removeEventListener("visibilitychange", alVolverVisible);
-    }, [uid]);
+    }, [authUid]);
     useEffect(() => {
         if (!loaded)
             return;
@@ -1864,11 +1864,11 @@ function TorneoApp({ uid }) {
         saveTimer.current = setTimeout(() => {
             const payload = { teams, players, fases, transfers, avisos, xiTorneo, temporadas };
             saveData(payload);
-            if (uid)
-                pushCloudData(uid, payload);
+            if (authUid)
+                pushCloudData(authUid, payload);
         }, 400);
         return () => clearTimeout(saveTimer.current);
-    }, [teams, players, fases, transfers, avisos, xiTorneo, temporadas, loaded, uid]);
+    }, [teams, players, fases, transfers, avisos, xiTorneo, temporadas, loaded, authUid]);
     useEffect(() => {
         if (!loaded)
             return;
@@ -2084,7 +2084,7 @@ function TorneoApp({ uid }) {
                 tab === "rankings" && React.createElement(Rankings, { players: players, teams: teams, jornadas: todasLasJornadas }),
                 tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
                 tab === "sanciones" && React.createElement(Sanciones, { players: players, setPlayers: setPlayers, teams: teams }),
-                tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo, onNuevaTemporada: () => setMostrarNuevaTemporada(true), diasDesdeBackup: diasDesdeBackup, uid: uid, syncEstado: syncEstado }),
+                tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo, onNuevaTemporada: () => setMostrarNuevaTemporada(true), diasDesdeBackup: diasDesdeBackup, authUid: authUid, syncEstado: syncEstado }),
                 mostrarNuevaTemporada && React.createElement(NuevaTemporadaModal, { teams: teams, players: players, proximoNumero: temporadas.length + 1, onClose: () => setMostrarNuevaTemporada(false), onConfirm: comenzarNuevaTemporada }),
                 tab === "salonfama" && React.createElement(SalonDeLaFama, { temporadas: temporadas })))));
 }
@@ -2263,7 +2263,7 @@ function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaG
                 React.createElement("button", { onClick: () => setTab("tabla"), className: "dash-extra-btn" }, "\uD83D\uDCCA Tabla")))));
 }
 // ---------- Extras ----------
-function Extras({ onExport, onImport, onResetLiga, onResetTodo, onNuevaTemporada, diasDesdeBackup, uid, syncEstado }) {
+function Extras({ onExport, onImport, onResetLiga, onResetTodo, onNuevaTemporada, diasDesdeBackup, authUid, syncEstado }) {
     const vencido = diasDesdeBackup === null || diasDesdeBackup >= 7;
     const textoEstado = diasDesdeBackup === null ? "Todav\u00EDa no hiciste ninguna copia." : `\u00DAltimo backup: hace ${diasDesdeBackup} d\u00EDa${diasDesdeBackup === 1 ? "" : "s"}.`;
     const textoSync = { cargando: "Sincronizando…", nube: "Sincronizado \u2601\uFE0F", "sin-conexion": "Sin conexi\u00F3n (usando copia local)", local: "Sin sincronizar (solo en este dispositivo)" }[syncEstado] || "";
@@ -2275,7 +2275,7 @@ function Extras({ onExport, onImport, onResetLiga, onResetTodo, onNuevaTemporada
                 React.createElement(Icon, { size: 16 }, "\u2601\uFE0F"),
                 " Sincronizaci\u00F3n entre dispositivos"),
             React.createElement("p", { className: "text-xs font-semibold mb-2", style: { color: colorSync } }, textoSync),
-            uid
+            authUid
                 ? React.createElement("button", { onClick: () => firebase.auth().signOut().then(() => window.location.reload()), className: "text-xs px-3 py-2 rounded-lg font-semibold", style: { background: "#f3f4f6", color: "#444" } }, "Cerrar sesi\u00F3n")
                 : React.createElement("p", { className: "text-xs text-zinc-500" }, "Inicia sesi\u00F3n (cerrando y volviendo a abrir la app) para sincronizar entre tu iPhone, Android y PC.")),
         React.createElement("div", { className: "card2 p-4", style: { borderColor: "#d9e0a0" } },
@@ -5548,7 +5548,7 @@ function AppConSesion() {
         return () => unsub();
     }, []);
     if (!firebaseListo() || sinCuenta) {
-        return React.createElement(TorneoApp, { uid: null });
+        return React.createElement(TorneoApp, { authUid: null });
     }
     if (user === undefined) {
         return React.createElement("div", { style: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#888" } }, "Cargando…");
@@ -5556,7 +5556,7 @@ function AppConSesion() {
     if (user === null) {
         return React.createElement(PantallaLogin, { onEntrarSinCuenta: () => setSinCuenta(true) });
     }
-    return React.createElement(TorneoApp, { uid: user.uid });
+    return React.createElement(TorneoApp, { authUid: user.uid });
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(AppConSesion, null));
 
