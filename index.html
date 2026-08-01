@@ -1980,11 +1980,11 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
         e.target.value = "";
     };
     const reiniciarLiga = () => {
-        if (!confirm("Esto borra todos los partidos (jugados y por jugar) de Apertura, Clausura y Liguilla, deja el calendario en blanco y devuelve a cada equipo su presupuesto inicial. Las estad\u00EDsticas de los jugadores (goles, asistencias, tarjetas, minutos) tambi\u00E9n se ponen a cero. Los equipos y jugadores (nombres, fotos, valoraciones, plantillas) NO se borran. ¿Continuar?"))
+        if (!confirm("Esto borra todos los partidos (jugados y por jugar) de Apertura, Clausura y Liguilla, deja el calendario en blanco y devuelve a cada equipo su presupuesto inicial. Las estad\u00EDsticas de los jugadores (goles, asistencias, tarjetas, minutos, MVPs, goles recibidos) tambi\u00E9n se ponen a cero, y su valor de mercado vuelve al valor base. Los equipos y jugadores (nombres, fotos, valoraciones, plantillas) NO se borran. ¿Continuar?"))
             return;
         setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
         setPlayers(players.map((p) => {
-            const limpio = { ...p, goles: 0, asistencias: 0, partidosJugados: 0, minutosJugados: 0, scores: [], amarillas: 0, rojas: 0, sancionJornadas: 0, jornadasLesionado: 0 };
+            const limpio = { ...p, goles: 0, asistencias: 0, partidosJugados: 0, minutosJugados: 0, scores: [], amarillas: 0, rojas: 0, sancionJornadas: 0, jornadasLesionado: 0, mvps: 0, golesRecibidos: 0 };
             limpio.valorMercado = calcValorMercado(limpio);
             return limpio;
         }));
