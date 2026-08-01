@@ -34,14 +34,14 @@
   // === CONFIGURACIÓN DE FIREBASE ===
   // Pega aquí los valores que te da la consola de Firebase (Configuración del proyecto → tus apps → SDK setup).
   window.__FIREBASE_CONFIG__ = {
-  apiKey: "AIzaSyBnGwUcd8b13R6Bckozl-E0ezdeQG8sP-Y",
-  authDomain: "liga-manager-e6c8c.firebaseapp.com",
-  databaseURL: "https://liga-manager-e6c8c-default-rtdb.firebaseio.com",
-  projectId: "liga-manager-e6c8c",
-  storageBucket: "liga-manager-e6c8c.firebasestorage.app",
-  messagingSenderId: "431049749872",
-  appId: "1:431049749872:web:af68eb48ce249a20900bb5"
-};
+    apiKey: "PEGA_AQUI_TU_API_KEY",
+    authDomain: "PEGA_AQUI_TU_AUTH_DOMAIN",
+    databaseURL: "PEGA_AQUI_TU_DATABASE_URL",
+    projectId: "PEGA_AQUI_TU_PROJECT_ID",
+    storageBucket: "PEGA_AQUI_TU_STORAGE_BUCKET",
+    messagingSenderId: "PEGA_AQUI_TU_MESSAGING_SENDER_ID",
+    appId: "PEGA_AQUI_TU_APP_ID"
+  };
   try {
     if (window.__FIREBASE_CONFIG__.apiKey.indexOf("PEGA_AQUI") === -1) {
       firebase.initializeApp(window.__FIREBASE_CONFIG__);
@@ -902,7 +902,7 @@ function golesRecibidosEnIntervalo(equipo, inicio, fin, eventos) {
 // tarjetas, minutos, sanciones, score y MVP. Devuelve un nuevo array (no muta el original).
 function aplicarEfectosJugadores(players, matchData) {
     const { localXI, visXI, eventos, tarjetas, subs, scores, mvp, localSquadIds, visSquadIds, lesiones } = matchData;
-    const workPlayers = players.map((p) => ({ ...p, scores: [...p.scores] }));
+    const workPlayers = players.map((p) => ({ ...p, scores: [...(p.scores || [])] }));
     const byId = Object.fromEntries(workPlayers.map((p) => [p.id, p]));
     const minutosDe = (jugadorId, enXI) => {
         if (!enXI) {
@@ -969,7 +969,7 @@ function aplicarEfectosJugadores(players, matchData) {
 // Inverso de aplicarEfectosJugadores: deshace los efectos de un partido ya aplicado.
 function revertirEfectosJugadores(players, matchData) {
     const { localXI, visXI, eventos, tarjetas, subs, scores, mvp, localSquadIds, visSquadIds, lesiones } = matchData;
-    const workPlayers = players.map((p) => ({ ...p, scores: [...p.scores] }));
+    const workPlayers = players.map((p) => ({ ...p, scores: [...(p.scores || [])] }));
     const byId = Object.fromEntries(workPlayers.map((p) => [p.id, p]));
     const minutosDe = (jugadorId, enXI) => {
         if (!enXI) {
@@ -1788,7 +1788,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
     const draftSaveTimer = useRef(null);
     const aplicarDatos = (d) => {
         setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
-        setPlayers(d.players || []);
+        setPlayers((d.players || []).map((p) => ({ ...p, scores: p.scores || [] })));
         setTransfers(d.transfers || []);
         setAvisos(d.avisos || []);
         setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
@@ -1956,7 +1956,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
                 if (!confirm("Esto reemplazará todos los datos actuales por los de la copia. ¿Continuar?"))
                     return;
                 setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
-                setPlayers(d.players || []);
+                setPlayers((d.players || []).map((p) => ({ ...p, scores: p.scores || [] })));
                 if (d.fases) {
                     setFases({
                         apertura: d.fases.apertura && d.fases.apertura.length ? d.fases.apertura : generarJornadas(),
@@ -2747,7 +2747,7 @@ function PlayerSheet({ player: p, onClose, onChange, onRemove, jornadas, teams }
                 React.createElement(Field, { label: "Valoraci\u00F3n (GRL 60-99)" },
                     React.createElement(NumberField, { min: 60, max: 99, disabled: comodin, value: comodin ? GRL_COMODIN : p.valoracion, onCommit: (n) => onChange({ valoracion: n }) })),
                 React.createElement(Field, { label: "Score promedio" },
-                    React.createElement("input", { disabled: true, value: p.scores.length ? scoreProm.toFixed(1) : "—" })),
+                    React.createElement("input", { disabled: true, value: p.scores && p.scores.length ? scoreProm.toFixed(1) : "—" })),
                 React.createElement(Field, { label: "Goles" },
                     React.createElement(NumberField, { min: 0, value: p.goles, onCommit: (n) => onChange({ goles: n }) })),
                 React.createElement(Field, { label: "Asistencias" },
@@ -5422,7 +5422,7 @@ function Rankings({ players, teams, jornadas }) {
     // Regla G+A: participación directa en gol. Empates por goles, luego asistencias, luego el resto de la Regla E.
     const gaAll = [...players].filter((p) => (p.goles || 0) + (p.asistencias || 0) > 0).sort((a, b) => ((b.goles || 0) + (b.asistencias || 0)) - ((a.goles || 0) + (a.asistencias || 0)) || (b.goles || 0) - (a.goles || 0) || tbRanking(a, b));
     const golesRecibidosAll = [...players].filter((p) => p.posicion === "PT" && p.partidosJugados > 0).sort((a, b) => (a.golesRecibidos || 0) - (b.golesRecibidos || 0) || tbRanking(a, b));
-    const scoreTopAll = [...players].filter((p) => p.scores.length > 0).sort((a, b) => avg(b.scores) - avg(a.scores) || tbScore(a, b));
+    const scoreTopAll = [...players].filter((p) => p.scores && p.scores.length > 0).sort((a, b) => avg(b.scores) - avg(a.scores) || tbScore(a, b));
     const masMvpsAll = [...players].filter((p) => (p.mvps || 0) > 0).sort((a, b) => (b.mvps || 0) - (a.mvps || 0) || tbRanking(a, b));
     const masCarosAll = [...players].filter((p) => p.valorMercado > 0).sort((a, b) => b.valorMercado - a.valorMercado || tbRanking(a, b));
     const goleadores = goleadoresAll.slice(0, 15);
@@ -5455,7 +5455,7 @@ function Estadisticas({ players, teams }) {
     const jugadosAll = [...players].filter((p) => (p.partidosJugados || 0) > 0).sort((a, b) => b.partidosJugados - a.partidosJugados || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b));
     const minutosAll = [...players].filter((p) => (p.minutosJugados || 0) > 0).sort((a, b) => b.minutosJugados - a.minutosJugados || (b.partidosJugados || 0) - (a.partidosJugados || 0) || porEquipo(a, b));
     const fairplayAll = [...players].filter((p) => (p.partidosJugados || 0) > 0).sort((a, b) => cardsPeso(a) - cardsPeso(b) || (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b));
-    const porGrupo = (grupo) => [...players].filter((p) => POSICION_GRUPO(p.posicion) === grupo && p.scores.length > 0).sort((a, b) => avg(b.scores) - avg(a.scores) || tbScore(a, b));
+    const porGrupo = (grupo) => [...players].filter((p) => POSICION_GRUPO(p.posicion) === grupo && p.scores && p.scores.length > 0).sort((a, b) => avg(b.scores) - avg(a.scores) || tbScore(a, b));
     const delanterosAll = porGrupo("Delantero");
     const mediocampistasAll = porGrupo("Mediocampista");
     const defensasAll = porGrupo("Defensor");
