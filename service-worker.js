@@ -8,6 +8,9 @@ const APP_SHELL = [
   './manifest.json',
   'https://unpkg.com/react@18.3.1/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js',
+  'https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js',
+  'https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js',
+  'https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon-180.png'
