@@ -33,16 +33,15 @@
 <script>
   // === CONFIGURACIÓN DE FIREBASE ===
   // Pega aquí los valores que te da la consola de Firebase (Configuración del proyecto → tus apps → SDK setup).
-window.__FIREBASE_CONFIG__ = {
-  apiKey: "AIzaSyBnGwUcd8b13R6Bckozl-E0ezdeQG8sP-Y",
-  authDomain: "liga-manager-e6c8c.firebaseapp.com",
-  databaseURL: "https://liga-manager-e6c8c-default-rtdb.firebaseio.com",
-  projectId: "liga-manager-e6c8c",
-  storageBucket: "liga-manager-e6c8c.firebasestorage.app",
-  messagingSenderId: "431049749872",
-  appId: "1:431049749872:web:af68eb48ce249a20900bb5"
-};
-
+  window.__FIREBASE_CONFIG__ = {
+    apiKey: "AIzaSyBnGwUcd8b13R6Bckozl-E0ezdeQG8sP-Y",
+    authDomain: "liga-manager-e6c8c.firebaseapp.com",
+    databaseURL: "https://liga-manager-e6c8c-default-rtdb.firebaseio.com",
+    projectId: "liga-manager-e6c8c",
+    storageBucket: "liga-manager-e6c8c.firebasestorage.app",
+    messagingSenderId: "431049749872",
+    appId: "1:431049749872:web:af68eb48ce249a20900bb5"
+  };
   try {
     if (window.__FIREBASE_CONFIG__.apiKey.indexOf("PEGA_AQUI") === -1) {
       firebase.initializeApp(window.__FIREBASE_CONFIG__);
@@ -631,7 +630,7 @@ function lineupVacio() {
 // Borrador en blanco de "Jugar partido": guarda TODO lo que se va cargando (alineaciones, goles, tarjetas,
 // cambios, scores, MVP) antes de confirmar, para que no se pierda nada al cambiar de sección/pestaña o de página.
 function draftPartidoVacio() {
-    return { jn: 1, partidoId: "", localLineup: lineupVacio(), visLineup: lineupVacio(), eventos: [], tarjetas: [], subs: [], scores: {}, mvp: "", lesiones: [], minutoActual: 1 };
+    return { jn: 1, partidoId: "", localLineup: lineupVacio(), visLineup: lineupVacio(), eventos: [], tarjetas: [], subs: [], scores: {}, mvp: "", lesiones: [], minutoActual: 1, extraActual: 0 };
 }
 // Agrupa un rol de formación en la macro-categoría usada para filtrar jugadores elegibles.
 const ROLE_GRUPO = (role) => {
@@ -2090,7 +2089,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
                 tab === "equipos" && !selectedTeamId && React.createElement(EquiposLista, { teams: teams, setTeams: setTeams, players: players, onOpen: setSelectedTeamId }),
                 tab === "equipos" && selectedTeamId && React.createElement(EquipoDetalle, { teamId: selectedTeamId, teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, onBack: () => setSelectedTeamId(null), todasLasJornadas: todasLasJornadas }),
                 tab === "tabla" && React.createElement(TablaTabs, { teams: teams, players: players, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, tablaAperturaAnterior: tablaAperturaAnterior, tablaClausuraAnterior: tablaClausuraAnterior, tablaGeneralAnterior: tablaGeneralAnterior, fases: fases, setFases: setFases, setTab: goTab, setFaseActiva: setFaseActiva }),
-                tab === "calendario" && React.createElement(Calendario, { key: faseActiva, teams: teams, jornadas: jornadasFase, setJornadas: setJornadasFase, setTab: goTab, players: players, setPlayers: setPlayers, setTeams: setTeams }),
+                tab === "calendario" && React.createElement(Calendario, { key: faseActiva, teams: teams, jornadas: jornadasFase, setJornadas: setJornadasFase, setTab: goTab, players: players, setPlayers: setPlayers, setTeams: setTeams, faseActiva: faseActiva }),
                 tab === "partido" && React.createElement(JugarPartido, { key: faseActiva, teams: teams, players: players, setPlayers: setPlayers, jornadas: jornadasFase, setJornadas: setJornadasFase, setTeams: setTeams, draft: draftPartido, setDraft: setDraftPartido, faseActiva: faseActiva, todasLasJornadas: todasLasJornadas }),
                 tab === "xiideal" && React.createElement(XiIdealJornada, { key: faseActiva, jornadas: jornadasFase, setJornadas: setJornadasFase, teams: teams, players: players, vecesXi: vecesXi }),
                 tab === "xiidealtorneo" && React.createElement(XiIdealTorneo, { fases: fases, todasLasJornadas: todasLasJornadas, teams: teams, players: players, vecesXi: vecesXi, xiTorneo: xiTorneo, setXiTorneo: setXiTorneo }),
@@ -3547,7 +3546,7 @@ function FilaPartidoCalendario({ p, idx, teams, setPartido, onReset }) {
             Linea(localTeam, p.golesLocal, ganaLocal),
             Linea(visTeam, p.golesVisitante, ganaVis)));
 }
-function Calendario({ teams, jornadas, setJornadas, setTab, players, setPlayers, setTeams }) {
+function Calendario({ teams, jornadas, setJornadas, setTab, players, setPlayers, setTeams, faseActiva }) {
     const [jn, setJn] = usePersistedState("calendarioJn", 1);
     const [ordenJornada, setOrdenJornada] = usePersistedState("calendarioOrden", "score");
     const jornada = jornadas.find((j) => j.numero === jn);
@@ -3564,12 +3563,15 @@ function Calendario({ teams, jornadas, setJornadas, setTab, players, setPlayers,
     const extraJornada = (p) => { const st = elegiblesJornadaMap.get(p.id); const partes = [`\u2B50 ${st.score.toFixed(1)}`, `${st.goles}G`, `${st.asistencias}A`]; return partes.filter((_, i) => campoOrden !== ["score", "goles", "asistencias"][i]).join(" \u00B7 "); };
     const OPCIONES_ORDEN = [["score", "Score"], ["goles", "Goles"], ["asistencias", "Asistencias"]];
     const numeroMax = jornadas.length ? jornadas[jornadas.length - 1].numero : 1;
-    const etiquetaJornada = (j) => (j && j.nombre) || `Jornada ${j ? j.numero : jn}`;
+    const esBono = (j) => (faseActiva === "apertura" || faseActiva === "clausura") && j && JORNADAS_BONO.has(j.numero);
+    const etiquetaJornada = (j) => `${(j && j.nombre) || `Jornada ${j ? j.numero : jn}`}${esBono(j) ? " \uD83C\uDF81" : ""}`;
     if (!jornadas.length)
         return React.createElement("div", { className: "card2 p-8 text-center text-zinc-500 text-sm" }, "Todav\u00EDa no hay una Liguilla generada. And\u00E1 a la pesta\u00F1a Tabla \u2192 Liguilla para generarla cuando terminen Apertura y Clausura.");
     return (React.createElement("div", { className: "space-y-3" },
         React.createElement("div", { className: "card2 p-3 flex items-center justify-between flex-wrap gap-2" },
-            React.createElement("span", { className: "font-black" }, etiquetaJornada(jornada)),
+            React.createElement("div", { className: "flex items-center gap-2 flex-wrap" },
+                React.createElement("span", { className: "font-black" }, etiquetaJornada(jornada)),
+                esBono(jornada) && React.createElement("span", { className: "text-[10px] font-bold text-[#8F9500] whitespace-nowrap", title: "Al completarse esta jornada se reparte un plus económico según la posición en la tabla." }, "\uD83C\uDF81 Bono")),
             React.createElement("div", { className: "flex items-center gap-2" },
                 React.createElement("button", { onClick: () => setJn(Math.max(1, jn - 1)), className: "px-2 py-1 rounded bg-zinc-100 hover:bg-zinc-200" }, "\u2190"),
                 React.createElement("select", { value: jn, onChange: (e) => setJn(+e.target.value) }, jornadas.map((j) => React.createElement("option", { key: j.numero, value: j.numero }, etiquetaJornada(j)))),
@@ -3954,6 +3956,7 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
     const lesiones = draft.lesiones || [];
     const setLesiones = (v) => patch("lesiones", v);
     const minutoActual = draft.minutoActual || 1;
+    const extraActual = draft.extraActual || 0;
     // Modo Móvil/Simplificado: preferencia de interfaz (no de datos), se recuerda entre sesiones igual que
     // otras selecciones de navegación, pero vive aparte del borrador del partido.
     const [modoMovil, setModoMovil] = usePersistedState("modoCapturaMovil", false);
@@ -3974,6 +3977,7 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
     const setTarjetasInmediato = (v) => patchInmediato("tarjetas", v);
     const setSubsInmediato = (v) => patchInmediato("subs", v);
     const setMinutoActualInmediato = (v) => patchInmediato("minutoActual", v);
+    const setExtraActualInmediato = (v) => patchInmediato("extraActual", v);
     const jornada = jornadas.find((j) => j.numero === jn);
     const partidosDisponibles = (jornada === null || jornada === void 0 ? void 0 : jornada.partidos.filter((p) => p.local && p.visitante)) || [];
     const partido = partidosDisponibles.find((p) => p.id === partidoId);
@@ -4132,7 +4136,7 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
                 React.createElement(EquipoAlineacion, { nombre: localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre, squad: localSquad, team: localTeam, lineup: localLineup, setLineup: setLocalLineup }),
                 React.createElement(EquipoAlineacion, { nombre: visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre, squad: visSquad, team: visTeam, lineup: visLineup, setLineup: setVisLineup })),
             modoMovil
-                ? React.createElement(CapturaMovilPanel, { localTeam, visTeam, localSquad, visSquad, localXI, visXI, localEnCancha, visEnCancha, eventos, tarjetas, subs, golesLocal, golesVis, minutoActual, setMinutoActualInmediato, setEventosInmediato, setTarjetasInmediato, setSubsInmediato })
+                ? React.createElement(CapturaMovilPanel, { localTeam, visTeam, localSquad, visSquad, localXI, visXI, localEnCancha, visEnCancha, eventos, tarjetas, subs, golesLocal, golesVis, minutoActual, setMinutoActualInmediato, extraActual, setExtraActualInmediato, setEventosInmediato, setTarjetasInmediato, setSubsInmediato })
                 : React.createElement(React.Fragment, null,
                     React.createElement(EventosPanel, { squad: squadEnCancha, squadCompleto: [...localSquad, ...visSquad], eventos: eventos, setEventos: setEventos, localSquad: localSquadEnCancha }),
                     React.createElement(TarjetasPanel, { squad: squadEnCancha, squadCompleto: [...localSquad, ...visSquad], tarjetas: tarjetas, setTarjetas: setTarjetas, lesiones: lesiones, setLesiones: setLesiones }),
@@ -4255,7 +4259,7 @@ function EquipoAlineacion({ nombre, squad, team, lineup, setLineup }) {
         const mismo = slotSel && ((slotSel === "PT" && destino === "PT") || (slotSel !== "PT" && destino !== "PT" && slotSel.li === destino.li && slotSel.si === destino.si));
         setSlotSel(mismo ? null : destino);
     };
-    const chipStyle = (activo) => ({ background: "none", border: activo ? "2px dashed #B4BC00" : "2px solid transparent", borderRadius: "12px", cursor: "pointer", padding: "2px", minWidth: 0 });
+    const chipStyle = (activo) => ({ background: "none", border: activo ? "2px dashed #B4BC00" : "2px solid transparent", borderRadius: "12px", cursor: "pointer", padding: "2px", minWidth: 0, width: "100%", display: "flex", justifyContent: "center", boxSizing: "border-box" });
     const renderSlot = (li, si, id, role) => {
         const activo = slotSel && slotSel !== "PT" && slotSel.li === li && slotSel.si === si;
         const p = id ? buscar(id) : null;
@@ -4559,7 +4563,8 @@ const ORIGEN_CAPTURA_MOVIL = "movil";
 // Panel de "Modo Móvil / Simplificado": pantalla reorganizada con botones táctiles grandes para cargar goles,
 // asistencias, tarjetas y cambios de un toque, sin tener que desplazarse por los paneles clásicos. Cada acción
 // se guarda inmediatamente (borrador + localStorage) mediante los setters "Inmediato" que recibe por props.
-function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, visXI, localEnCancha, visEnCancha, eventos, tarjetas, subs, golesLocal, golesVis, minutoActual, setMinutoActualInmediato, setEventosInmediato, setTarjetasInmediato, setSubsInmediato }) {
+const MINUTO_FIN_PRIMER_TIEMPO = 45;
+function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, visXI, localEnCancha, visEnCancha, eventos, tarjetas, subs, golesLocal, golesVis, minutoActual, setMinutoActualInmediato, extraActual, setExtraActualInmediato, setEventosInmediato, setTarjetasInmediato, setSubsInmediato }) {
     const [accion, setAccion] = useState(null);
     const [corriendo, setCorriendo] = useState(false);
     // Cronómetro: mientras está en marcha, suma un minuto de partido cada MS_POR_MINUTO_CRONOMETRO (velocidad
@@ -4570,11 +4575,19 @@ function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, 
         const t = setInterval(() => setMinutoActualInmediato((m) => Math.min(120, (m || 1) + 1)), MS_POR_MINUTO_CRONOMETRO);
         return () => clearInterval(t);
     }, [corriendo]);
-    // Al llegar al minuto de fin de partido, el cronómetro se pausa solo (por las dudas de que te olvides).
+    // Al llegar al final del 1er tiempo (45') o del partido (90'), el cronómetro se pausa solo, para dar
+    // oportunidad de cargar el tiempo agregado (descuento) antes de arrancar el 2do tiempo o cerrar el partido.
     useEffect(() => {
-        if (corriendo && minutoActual >= MINUTO_FIN_PARTIDO)
+        if (corriendo && (minutoActual === MINUTO_FIN_PRIMER_TIEMPO || minutoActual >= MINUTO_FIN_PARTIDO))
             setCorriendo(false);
     }, [minutoActual]);
+    // El tiempo agregado (45+X / 90+X) es propio de cada pausa: al retomar el cronómetro (avanza el minuto base)
+    // se reinicia a 0, porque el descuento del 1er tiempo no aplica al 2do, ni el del partido a un eventual extra.
+    useEffect(() => {
+        if (extraActual)
+            setExtraActualInmediato(0);
+    }, [minutoActual]);
+    const enDescuento = minutoActual === MINUTO_FIN_PRIMER_TIEMPO || minutoActual === MINUTO_FIN_PARTIDO;
     const localEnCanchaSquad = localSquad.filter((p) => localEnCancha.has(p.id));
     const visEnCanchaSquad = visSquad.filter((p) => visEnCancha.has(p.id));
     const ambosEnCancha = [
@@ -4586,10 +4599,11 @@ function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, 
         const xiActual = equipo === "local" ? localXI : visXI;
         return squadActual.filter((p) => !xiActual.includes(p.id) && !subs.some((s) => s.entra === p.id));
     };
-    const cerrar = () => setAccion(null);
-    const agregarGol = (equipo, jugadorId, propia, asistenciaId) => {
+    const [etiquetaSel, setEtiquetaSel] = useState(null);
+    const cerrar = () => { setAccion(null); setEtiquetaSel(null); };
+    const agregarGol = (equipo, jugadorId, propia, asistenciaId, etiqueta) => {
         const equipoFinal = propia ? (equipo === "local" ? "vis" : "local") : equipo;
-        const nuevo = { id: uid("gol"), equipo: equipoFinal, jugador: jugadorId, asistencia: propia ? null : (asistenciaId || null), minuto: minutoActual, extra: 0, propia: !!propia, etiqueta: null, origenCaptura: ORIGEN_CAPTURA_MOVIL, creadoEn: Date.now() };
+        const nuevo = { id: uid("gol"), equipo: equipoFinal, jugador: jugadorId, asistencia: propia ? null : (asistenciaId || null), minuto: minutoActual, extra: extraActual || 0, propia: !!propia, etiqueta: etiqueta || null, origenCaptura: ORIGEN_CAPTURA_MOVIL, creadoEn: Date.now() };
         setEventosInmediato([...eventos, nuevo]);
         cerrar();
     };
@@ -4607,7 +4621,7 @@ function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, 
     };
     const agregarTarjeta = (jugadorId, tipo) => {
         const amarillasPrevias = tarjetas.filter((t) => t.jugador === jugadorId && t.tipo === "amarilla").length;
-        setTarjetasInmediato([...tarjetas, { id: uid("tj"), jugador: jugadorId, tipo, minuto: minutoActual, extra: 0, origenCaptura: ORIGEN_CAPTURA_MOVIL, creadoEn: Date.now() }]);
+        setTarjetasInmediato([...tarjetas, { id: uid("tj"), jugador: jugadorId, tipo, minuto: minutoActual, extra: extraActual || 0, origenCaptura: ORIGEN_CAPTURA_MOVIL, creadoEn: Date.now() }]);
         if (tipo === "roja")
             alert("\uD83D\uDFE5 Roja directa: jugador expulsado.");
         else if (amarillasPrevias >= 1)
@@ -4615,7 +4629,7 @@ function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, 
         cerrar();
     };
     const agregarCambio = (equipo, saleId, entraId) => {
-        setSubsInmediato([...subs, { id: uid("sub"), equipo, sale: saleId, entra: entraId, minuto: minutoActual, extra: 0, origenCaptura: ORIGEN_CAPTURA_MOVIL, creadoEn: Date.now() }]);
+        setSubsInmediato([...subs, { id: uid("sub"), equipo, sale: saleId, entra: entraId, minuto: minutoActual, extra: extraActual || 0, origenCaptura: ORIGEN_CAPTURA_MOVIL, creadoEn: Date.now() }]);
         cerrar();
     };
     // Deshacer: encuentra la última carga (gol, tarjeta o cambio) hecha desde este modo, sin importar el tipo,
@@ -4652,9 +4666,14 @@ function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, 
         minutoActual >= MINUTO_FIN_PARTIDO && React.createElement("div", { className: "qc-fin-banner" }, `\uD83C\uDFC1 Partido terminado (${MINUTO_FIN_PARTIDO}'). No te olvid\u00E9s de tocar "Guardar partido" m\u00E1s abajo.`),
         React.createElement("div", { className: "qc-clock-row" },
             React.createElement("button", { type: "button", onClick: () => setMinutoActualInmediato(Math.max(1, minutoActual - 1)), className: "qc-clock-btn" }, "\u2212"),
-            React.createElement("div", { className: "qc-clock" }, `${minutoActual}'`),
+            React.createElement("div", { className: "qc-clock" }, fmtMinuto(minutoActual, extraActual)),
             React.createElement("button", { type: "button", onClick: () => setMinutoActualInmediato(Math.min(120, minutoActual + 1)), className: "qc-clock-btn" }, "+"),
             React.createElement("button", { type: "button", onClick: () => setCorriendo(!corriendo), className: `qc-clock-play${corriendo ? " running" : ""}` }, corriendo ? "\u23F8\uFE0F En marcha" : "\u25B6\uFE0F Iniciar")),
+        enDescuento && React.createElement("div", { className: "qc-clock-row", style: { justifyContent: "center", gap: 10, paddingTop: 0 } },
+            React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: "#71717a" } }, minutoActual === MINUTO_FIN_PARTIDO ? "Descuento final:" : "Descuento 1er tiempo:"),
+            React.createElement("button", { type: "button", onClick: () => setExtraActualInmediato(Math.max(0, extraActual - 1)), className: "qc-clock-btn", style: { width: 30, height: 30 } }, "\u2212"),
+            React.createElement("span", { style: { fontWeight: 900, minWidth: 18, textAlign: "center" } }, `+${extraActual}`),
+            React.createElement("button", { type: "button", onClick: () => setExtraActualInmediato(Math.min(15, extraActual + 1)), className: "qc-clock-btn", style: { width: 30, height: 30 } }, "+")),
         React.createElement("div", { className: "qc-score-row" },
             React.createElement("div", { className: "qc-score-team" },
                 React.createElement("span", { className: "qc-score-name" }, (localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre) || "Local"),
@@ -4680,6 +4699,8 @@ function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, 
                         : accion.tipo === "cambio" ? (accion.paso === "equipo" ? "\u00BFQu\u00E9 equipo cambia?" : accion.paso === "sale" ? "\u00BFQui\u00E9n sale?" : "\u00BFQui\u00E9n entra?")
                             : "\u00BFAsistencia de\u2026?"),
                 React.createElement("button", { type: "button", onClick: cerrar, className: "qc-picker-close", title: "Cancelar" }, "\u2715")),
+            accion.tipo === "gol" && React.createElement("div", { className: "qc-picker-sub", style: { display: "flex", flexWrap: "wrap", gap: 6, padding: "0 2px" } },
+                ETIQUETAS_GOL.map((et) => React.createElement("button", { key: et, type: "button", onClick: () => setEtiquetaSel(etiquetaSel === et ? null : et), className: "text-[10px] font-bold px-2.5 py-1 rounded-full", style: etiquetaSel === et ? { background: "#8F9500", color: "#fff" } : { background: "#f0f0f0", color: "#71717a" } }, et))),
             accion.tipo === "gol" && accion.paso !== "asistencia" && React.createElement(React.Fragment, null,
                 React.createElement("label", { className: "qc-propia-toggle" },
                     React.createElement("input", { type: "checkbox", checked: !!accion.propia, onChange: (e) => setAccion({ ...accion, propia: e.target.checked }) }),
@@ -4687,13 +4708,13 @@ function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, 
                 React.createElement(QcPlayerGrid, {
                     jugadores: accion.propia ? (accion.equipo === "local" ? visEnCanchaSquad : localEnCanchaSquad) : (accion.equipo === "local" ? localEnCanchaSquad : visEnCanchaSquad),
                     vacio: "No hay jugadores en cancha todav\u00EDa.",
-                    onPick: (jugadorId) => accion.propia ? agregarGol(accion.equipo, jugadorId, true, null) : setAccion({ ...accion, paso: "asistencia", jugador: jugadorId }),
+                    onPick: (jugadorId) => accion.propia ? agregarGol(accion.equipo, jugadorId, true, null, etiquetaSel) : setAccion({ ...accion, paso: "asistencia", jugador: jugadorId }),
                 })),
             accion.tipo === "gol" && accion.paso === "asistencia" && React.createElement(React.Fragment, null,
-                React.createElement("button", { type: "button", onClick: () => agregarGol(accion.equipo, accion.jugador, false, null), className: "qc-skip-btn" }, "Sin asistencia \u2192"),
+                React.createElement("button", { type: "button", onClick: () => agregarGol(accion.equipo, accion.jugador, false, null, etiquetaSel), className: "qc-skip-btn" }, "Sin asistencia \u2192"),
                 React.createElement(QcPlayerGrid, {
                     jugadores: (accion.equipo === "local" ? localEnCanchaSquad : visEnCanchaSquad).filter((p) => p.id !== accion.jugador),
-                    onPick: (jugadorId) => agregarGol(accion.equipo, accion.jugador, false, jugadorId),
+                    onPick: (jugadorId) => agregarGol(accion.equipo, accion.jugador, false, jugadorId, etiquetaSel),
                 })),
             accion.tipo === "tarjeta" && React.createElement(QcPlayerGrid, {
                 jugadores: ambosEnCancha,
@@ -4983,15 +5004,18 @@ function colorScore(s) {
 // tiene muchas columnas en una fila y el ancho disponible es chico (celulares).
 function JugadorPitchVisual({ jugador, team, score, placeholder, role }) {
     const posicionBadge = jugador ? jugador.posicion : role;
+    const chip = (texto) => React.createElement("span", { className: "font-black", style: { fontSize: "9px", color: "#101114", background: "#F4F7DE", border: "1px solid #B4BC00", borderRadius: "5px", padding: "0 4px", lineHeight: "13px", whiteSpace: "nowrap" } }, texto);
     return React.createElement("div", { className: "flex flex-col items-center gap-1", style: { width: "100%", maxWidth: "72px", minWidth: 0 } },
-        posicionBadge && React.createElement("div", { className: "font-black", style: { fontSize: "9px", color: "#101114", background: "#F4F7DE", border: "1px solid #B4BC00", borderRadius: "5px", padding: "0 4px", lineHeight: "13px", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, posicionBadge),
+        (posicionBadge || jugador) && React.createElement("div", { className: "flex items-center justify-center gap-1", style: { maxWidth: "100%", overflow: "hidden" } },
+            posicionBadge && chip(posicionBadge),
+            jugador && chip(`#${jugador.dorsal}`)),
         React.createElement("div", { style: { position: "relative", width: "72%", maxWidth: "52px", aspectRatio: "1 / 1" } },
             React.createElement("div", { style: { width: "100%", height: "100%", borderRadius: "9999px", overflow: "hidden", border: "2px solid rgba(255,255,255,.55)", background: jugador ? "#3a3a3f" : "rgba(255,255,255,.12)", display: "flex", alignItems: "center", justifyContent: "center" } }, jugador ? (jugador.foto ? React.createElement("img", { src: jugador.foto, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } }) : React.createElement("span", { className: "text-white font-black text-xs" },
                 "#",
                 jugador.dorsal)) : React.createElement("span", { className: "text-white font-black text-lg", style: { opacity: .6 } }, "+")),
             jugador && score != null && React.createElement("div", { style: { position: "absolute", top: "-6px", left: "-6px", background: colorScore(score), color: "#fff", fontSize: "10px", fontWeight: 900, padding: "1px 5px", borderRadius: "5px", boxShadow: "0 1px 3px rgba(0,0,0,.4)" } }, score.toFixed(1)),
             jugador && React.createElement("div", { style: { position: "absolute", bottom: "-4px", right: "-4px", width: "19px", height: "19px", borderRadius: "9999px", overflow: "hidden", border: "2px solid #101114", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center" } }, team && team.escudo ? React.createElement("img", { src: team.escudo, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } }) : React.createElement("span", { style: { fontSize: "9px", fontWeight: 900, color: "#8F9500" } }, team ? team.nombre.slice(0, 1) : "?"))),
-        React.createElement("div", { className: "text-white text-[9px] font-bold text-center", style: { textShadow: "0 1px 2px rgba(0,0,0,.6)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" } }, jugador ? `#${jugador.dorsal} ${(jugador.nombreDorsal && jugador.nombreDorsal.trim()) || jugador.nombre}` : placeholder));
+        React.createElement("div", { className: "text-white text-[9px] font-bold text-center", style: { textShadow: "0 1px 2px rgba(0,0,0,.6)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" } }, jugador ? ((jugador.nombreDorsal && jugador.nombreDorsal.trim()) || jugador.nombre) : placeholder));
 }
 // Slot editable: al tocarlo se abre el selector de jugador.
 function SlotPicker({ jugadorId, disabledIds, players, teams, elegiblesIds, statsMap, placeholder, role, onPick }) {
@@ -5010,7 +5034,7 @@ function SlotPicker({ jugadorId, disabledIds, players, teams, elegiblesIds, stat
     }
     const st = jugador && statsMap.get(jugador.id);
     const team = jugador ? teams.find((t) => t.id === jugador.equipoId) : null;
-    return React.createElement("button", { type: "button", onClick: () => setEditando(true), style: { background: "none", border: "none", cursor: "pointer", padding: 0, minWidth: 0 } },
+    return React.createElement("button", { type: "button", onClick: () => setEditando(true), style: { background: "none", border: "none", cursor: "pointer", padding: 0, minWidth: 0, width: "100%", display: "flex", justifyContent: "center", boxSizing: "border-box" } },
         React.createElement(JugadorPitchVisual, { jugador: jugador, team: team, score: st ? st.score : null, placeholder: placeholder, role: role }));
 }
 // Slot est\u00E1tico (solo lectura), usado en la vista de exportaci\u00F3n.
@@ -5026,8 +5050,8 @@ function FormacionField({ lineasRoles, filas, ptId, renderSlot, renderPT }) {
     return React.createElement("div", { className: "rounded-2xl", style: { background: "linear-gradient(180deg,#1c1d22,#0e0f12)", border: "1px solid #2c2c30", padding: "16px 8px", position: "relative", overflow: "hidden", maxWidth: "100%", boxSizing: "border-box" } },
         React.createElement("div", { style: { position: "absolute", top: "10px", left: "50%", transform: "translateX(-50%)", width: "160px", maxWidth: "70%", height: "80px", border: "1.5px solid rgba(255,255,255,.10)", borderTop: "none", borderRadius: "0 0 160px 160px", pointerEvents: "none" } }),
         React.createElement("div", { className: "space-y-3", style: { position: "relative" } },
-            lineasRoles.map((roles, li) => React.createElement("div", { key: li, className: "grid gap-1", style: { gridTemplateColumns: `repeat(${roles.length}, minmax(0,1fr))`, justifyItems: "center" } }, roles.map((role, si) => renderSlot(li, si, filas[li] ? filas[li][si] : null, role)))),
-            React.createElement("div", { className: "grid", style: { gridTemplateColumns: "minmax(0,1fr)", justifyItems: "center" } }, renderPT ? renderPT() : null)));
+            lineasRoles.map((roles, li) => React.createElement("div", { key: li, className: "grid gap-1", style: { gridTemplateColumns: `repeat(${roles.length}, minmax(0,1fr))`, justifyItems: "stretch" } }, roles.map((role, si) => renderSlot(li, si, filas[li] ? filas[li][si] : null, role)))),
+            React.createElement("div", { className: "grid", style: { gridTemplateColumns: "minmax(0,1fr)", justifyItems: "stretch" } }, renderPT ? renderPT() : null)));
 }
 // ---------- Exportar XI Ideal ----------
 function ExportarXiView({ xi, formacion, jornadaNumero, titulo, players, teams, statsMap, onClose }) {
@@ -5417,7 +5441,7 @@ function Rankings({ players, teams, jornadas }) {
     // Regla E: empates en Rankings (no-score) se resuelven por Partidos Jugados, luego Minutos, luego Equipo.
     const tbRanking = (a, b) => (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b);
     // Regla D: empates en SCORE se resuelven por Goles, Asistencias, Partidos Jugados, Minutos, Equipo.
-    const tbScore = (a, b) => (b.goles || 0) - (a.goles || 0) || (b.asistencias || 0) - (a.asistencias || 0) || (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b);
+    const tbScore = (a, b) => porEquipo(a, b) || (b.goles || 0) - (a.goles || 0) || (b.asistencias || 0) - (a.asistencias || 0) || (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0);
     const goleadoresAll = [...players].filter((p) => p.goles > 0).sort((a, b) => b.goles - a.goles || tbRanking(a, b));
     const asistidoresAll = [...players].filter((p) => p.asistencias > 0).sort((a, b) => b.asistencias - a.asistencias || tbRanking(a, b));
     // Regla G+A: participación directa en gol. Empates por goles, luego asistencias, luego el resto de la Regla E.
@@ -5451,7 +5475,7 @@ function Estadisticas({ players, teams }) {
     const teamName = (id) => { var _a; return ((_a = teams.find((t) => t.id === id)) === null || _a === void 0 ? void 0 : _a.nombre) || "—"; };
     const porEquipo = (a, b) => teamName(a.equipoId).localeCompare(teamName(b.equipoId));
     // Regla D: empates en SCORE (usada por las 4 categorías de posición) -> Goles, Asistencias, PJ, Minutos, Equipo.
-    const tbScore = (a, b) => (b.goles || 0) - (a.goles || 0) || (b.asistencias || 0) - (a.asistencias || 0) || (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b);
+    const tbScore = (a, b) => porEquipo(a, b) || (b.goles || 0) - (a.goles || 0) || (b.asistencias || 0) - (a.asistencias || 0) || (b.partidosJugados || 0) - (a.partidosJugados || 0) || (b.minutosJugados || 0) - (a.minutosJugados || 0);
     const cardsPeso = (p) => (p.amarillas || 0) + (p.rojas || 0) * 3;
     const jugadosAll = [...players].filter((p) => (p.partidosJugados || 0) > 0).sort((a, b) => b.partidosJugados - a.partidosJugados || (b.minutosJugados || 0) - (a.minutosJugados || 0) || porEquipo(a, b));
     const minutosAll = [...players].filter((p) => (p.minutosJugados || 0) > 0).sort((a, b) => b.minutosJugados - a.minutosJugados || (b.partidosJugados || 0) - (a.partidosJugados || 0) || porEquipo(a, b));
