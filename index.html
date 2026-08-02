@@ -385,11 +385,22 @@
     .info-card, .wide-card, .card2 { border-radius:12px; }
     .match-pick-teams { font-size:12px; }
   }
-  /* ---- Móvil en horizontal: poca altura disponible, se compacta el padding vertical y las hojas modales ---- */
+  /* ---- Móvil en horizontal: poca altura disponible, se compacta el padding vertical y las hojas modales.
+     También se aprovecha el ancho extra: 2 columnas en vez de 1 en varias grillas, y se respeta el "notch"
+     lateral del iPhone (en horizontal el recorte de pantalla queda a los costados, no arriba). ---- */
   @media (max-width:900px) and (max-height:480px) and (orientation:landscape){
-    .mobile-topbar { padding:calc(8px + env(safe-area-inset-top)) 14px 8px; }
-    main.p-3 { padding-top:0.5rem !important; padding-bottom:0.5rem !important; }
+    .mobile-topbar { padding:calc(8px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) 8px calc(14px + env(safe-area-inset-left)); }
+    main.p-3 { padding-top:0.5rem !important; padding-bottom:0.5rem !important; padding-left:calc(0.75rem + env(safe-area-inset-left)) !important; padding-right:calc(0.75rem + env(safe-area-inset-right)) !important; }
     .sheet { max-height:94vh; }
+    .sidebar { padding-left:env(safe-area-inset-left); }
+    .dash-row { grid-template-columns:1fr 1fr; }
+    .card2 .section-header { padding-top:8px !important; padding-bottom:8px !important; }
+    .info-card { padding:10px; }
+  }
+  /* ---- Tablet/landscape con algo más de alto (ej. iPhone Pro Max acostado): igual conviene 2 columnas
+     en las grillas de una sola columna, sin necesidad de comprimir tanto el padding. ---- */
+  @media (min-width:560px) and (max-width:900px) and (orientation:landscape){
+    .dash-row { grid-template-columns:1fr 1fr; }
   }
   /* ---- Tarjetas de info individuales (General) ---- */
   .info-card { background:#fff; border:1px solid #e3e3dc; border-radius:14px; padding:14px; }
@@ -2529,12 +2540,38 @@ function EquiposLista({ teams, setTeams, players, onOpen }) {
 // ---------- Lista de Deseos del equipo: hasta 3 jugadores de otros clubes a seguir para negociar fichajes ----------
 function WishlistCard({ team, teams, players, setTeams }) {
     const [agregando, setAgregando] = useState(false);
+    const [busqueda, setBusqueda] = useState("");
+    const [filtroPos, setFiltroPos] = useState("");
+    const [filtroEquipo, setFiltroEquipo] = useState("");
+    const [grlMin, setGrlMin] = useState("");
+    const [grlMax, setGrlMax] = useState("");
+    const [precioMin, setPrecioMin] = useState("");
+    const [precioMax, setPrecioMax] = useState("");
     const wishlistIds = team.wishlist || [];
     const wishlistJugadores = wishlistIds.map((id) => players.find((p) => p.id === id)).filter(Boolean);
     const disponibles = wishlistJugadores.filter((p) => jugadorDisponible(p));
     // Elegibles para añadir: jugadores de OTROS clubes (no agentes libres, no de este mismo equipo) que aún no estén en la lista.
     const elegibles = players.filter((p) => p.equipoId && p.equipoId !== team.id && !wishlistIds.includes(p.id))
         .sort((a, b) => b.valoracion - a.valoracion || a.nombre.localeCompare(b.nombre));
+    const hayFiltros = busqueda || filtroPos || filtroEquipo || grlMin !== "" || grlMax !== "" || precioMin !== "" || precioMax !== "";
+    const limpiarFiltros = () => { setBusqueda(""); setFiltroPos(""); setFiltroEquipo(""); setGrlMin(""); setGrlMax(""); setPrecioMin(""); setPrecioMax(""); };
+    const elegiblesFiltrados = elegibles.filter((p) => {
+        if (busqueda.trim() && !p.nombre.toLowerCase().includes(busqueda.trim().toLowerCase()))
+            return false;
+        if (filtroPos && p.posicion !== filtroPos)
+            return false;
+        if (filtroEquipo && p.equipoId !== filtroEquipo)
+            return false;
+        if (grlMin !== "" && p.valoracion < Number(grlMin))
+            return false;
+        if (grlMax !== "" && p.valoracion > Number(grlMax))
+            return false;
+        if (precioMin !== "" && (p.valorMercado || 0) < Number(precioMin))
+            return false;
+        if (precioMax !== "" && (p.valorMercado || 0) > Number(precioMax))
+            return false;
+        return true;
+    });
     const quitar = (id) => setTeams(teams.map((t) => (t.id === team.id ? { ...t, wishlist: (t.wishlist || []).filter((x) => x !== id) } : t)));
     const agregar = (id) => {
         if (!id)
@@ -2543,6 +2580,7 @@ function WishlistCard({ team, teams, players, setTeams }) {
             return;
         setTeams(teams.map((t) => (t.id === team.id ? { ...t, wishlist: [...(t.wishlist || []), id] } : t)));
         setAgregando(false);
+        limpiarFiltros();
     };
     return React.createElement("div", { className: "card2" },
         React.createElement("div", { className: "section-header px-4 py-2.5 flex items-center justify-between" },
@@ -2565,16 +2603,37 @@ function WishlistCard({ team, teams, players, setTeams }) {
                     React.createElement("button", { onClick: () => quitar(p.id), className: "text-[11px] text-red-500 hover:text-red-700 font-semibold shrink-0" }, "\u2715 Quitar"));
             }),
             !wishlistJugadores.length && !agregando && React.createElement("div", { className: "text-center text-zinc-500 py-4 text-sm" }, "A\u00FAn no seguiste a ning\u00FAn jugador. Agreg\u00E1 hasta 3 de otros clubes."),
-            agregando ? React.createElement("div", { className: "flex gap-2" },
-                React.createElement("select", { autoFocus: true, className: "flex-1", onChange: (e) => agregar(e.target.value) },
-                    React.createElement("option", { value: "" }, "Eleg\u00ED un jugador de otro club\u2026"),
-                    teams.filter((t) => t.id !== team.id).map((t) => {
-                        const opts = elegibles.filter((p) => p.equipoId === t.id);
-                        if (!opts.length)
-                            return null;
-                        return React.createElement("optgroup", { key: t.id, label: t.nombre }, opts.map((p) => React.createElement("option", { key: p.id, value: p.id }, `${p.nombre} \u2014 GRL ${p.valoracion} \u00B7 ${fmtMoney(p.valorMercado)}`)));
+            agregando ? React.createElement("div", { className: "space-y-2" },
+                React.createElement("input", { autoFocus: true, className: "w-full", placeholder: "Buscar por nombre\u2026", value: busqueda, onChange: (e) => setBusqueda(e.target.value) }),
+                React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs" },
+                    React.createElement(Field, { label: "Posici\u00F3n" },
+                        React.createElement("select", { className: "w-full", value: filtroPos, onChange: (e) => setFiltroPos(e.target.value) },
+                            React.createElement("option", { value: "" }, "Todas"),
+                            POSICIONES.map((pos) => React.createElement("option", { key: pos, value: pos }, pos)))),
+                    React.createElement(Field, { label: "Equipo" },
+                        React.createElement("select", { className: "w-full", value: filtroEquipo, onChange: (e) => setFiltroEquipo(e.target.value) },
+                            React.createElement("option", { value: "" }, "Todos"),
+                            teams.filter((t) => t.id !== team.id).map((t) => React.createElement("option", { key: t.id, value: t.id }, t.nombre)))),
+                    React.createElement(Field, { label: "GRL m\u00EDn." },
+                        React.createElement("input", { type: "number", min: 60, max: 99, className: "w-full", placeholder: "60", value: grlMin, onChange: (e) => setGrlMin(e.target.value) })),
+                    React.createElement(Field, { label: "GRL m\u00E1x." },
+                        React.createElement("input", { type: "number", min: 60, max: 99, className: "w-full", placeholder: "99", value: grlMax, onChange: (e) => setGrlMax(e.target.value) })),
+                    React.createElement(Field, { label: "Precio m\u00EDn." },
+                        React.createElement("input", { type: "number", min: 0, step: 1000, className: "w-full", placeholder: "$0", value: precioMin, onChange: (e) => setPrecioMin(e.target.value) })),
+                    React.createElement(Field, { label: "Precio m\u00E1x." },
+                        React.createElement("input", { type: "number", min: 0, step: 1000, className: "w-full", placeholder: "Sin l\u00EDmite", value: precioMax, onChange: (e) => setPrecioMax(e.target.value) }))),
+                hayFiltros && React.createElement("button", { type: "button", onClick: limpiarFiltros, className: "text-[11px] font-bold text-zinc-500 hover:text-zinc-700" }, "\u2715 Limpiar filtros"),
+                React.createElement("div", { className: "rounded-xl border border-zinc-200 divide-y divide-zinc-100", style: { maxHeight: "260px", overflowY: "auto" } },
+                    elegiblesFiltrados.length === 0 && React.createElement("div", { className: "text-center text-zinc-500 py-4 text-xs" }, "Ning\u00FAn jugador coincide con esos filtros."),
+                    elegiblesFiltrados.map((p) => {
+                        const eq = teams.find((t) => t.id === p.equipoId);
+                        return React.createElement("button", { key: p.id, type: "button", onClick: () => agregar(p.id), className: "w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-zinc-50" },
+                            p.foto ? React.createElement("img", { src: p.foto, className: "w-9 h-9 rounded-full object-cover", style: { flexShrink: 0 } }) : React.createElement("div", { className: "avatar-ph w-9 h-9 rounded-full text-xs font-bold", style: { flexShrink: 0 } }, p.dorsal),
+                            React.createElement("div", { className: "flex-1 min-w-0" },
+                                React.createElement("div", { className: "font-semibold text-sm" }, p.nombre),
+                                React.createElement("div", { className: "text-[11px] text-zinc-500" }, `#${p.dorsal} \u00B7 ${p.posicion} \u00B7 GRL ${p.valoracion} \u00B7 ${eq ? eq.nombre : "\u2014"} \u00B7 ${fmtMoney(p.valorMercado)}`)));
                     })),
-                React.createElement("button", { onClick: () => setAgregando(false), className: "text-xs px-3 py-1.5 rounded-full font-semibold bg-zinc-100 text-zinc-600" }, "Cancelar")) : (wishlistIds.length < MAX_WISHLIST && React.createElement("button", { onClick: () => setAgregando(true), className: "text-xs px-3 py-1.5 rounded-full font-semibold", style: { background: "#8F9500", color: "#fff" } }, "\u2795 A\u00F1adir a la Lista de Deseos"))));
+                React.createElement("button", { onClick: () => { setAgregando(false); limpiarFiltros(); }, className: "text-xs px-3 py-1.5 rounded-full font-semibold bg-zinc-100 text-zinc-600" }, "Cancelar")) : (wishlistIds.length < MAX_WISHLIST && React.createElement("button", { onClick: () => setAgregando(true), className: "text-xs px-3 py-1.5 rounded-full font-semibold", style: { background: "#8F9500", color: "#fff" } }, "\u2795 A\u00F1adir a la Lista de Deseos"))));
 }
 function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack, todasLasJornadas }) {
     const team = teams.find((t) => t.id === teamId);
@@ -3976,6 +4035,7 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
     const setEventosInmediato = (v) => patchInmediato("eventos", v);
     const setTarjetasInmediato = (v) => patchInmediato("tarjetas", v);
     const setSubsInmediato = (v) => patchInmediato("subs", v);
+    const setLesionesInmediato = (v) => patchInmediato("lesiones", v);
     const setMinutoActualInmediato = (v) => patchInmediato("minutoActual", v);
     const setExtraActualInmediato = (v) => patchInmediato("extraActual", v);
     const jornada = jornadas.find((j) => j.numero === jn);
@@ -4041,6 +4101,18 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
         return s ? s.minuto : 90;
     };
     const esEdicion = !!(partido && partido.jugado);
+    // Antes de armar el partido, si hay jugadores de cualquiera de los dos equipos que siguen marcados como
+    // lesionados, se pregunta una sola vez por partido si ya se recuperaron — así no hay que ir a editar cada
+    // jugador a mano, y si ya no está lesionado no hace falta volver a preguntar en partidos siguientes.
+    const [lesionConfirmados, setLesionConfirmados] = useState(() => new Set());
+    useEffect(() => { setLesionConfirmados(new Set()); }, [partidoId]);
+    const lesionadosPendientes = partido ? [...localSquad, ...visSquad].filter((p) => (p.jornadasLesionado || 0) > 0 && !lesionConfirmados.has(p.id)) : [];
+    const confirmarLesion = (id, sigueLesionado) => {
+        if (!sigueLesionado) {
+            setPlayers(players.map((p) => (p.id === id ? { ...p, jornadasLesionado: 0 } : p)));
+        }
+        setLesionConfirmados((prev) => new Set([...prev, id]));
+    };
     const handleReiniciar = () => {
         reiniciarPartido(partido, jn, { players, setPlayers, teams, setTeams, jornadas, setJornadas });
         setPartidoId("");
@@ -4123,6 +4195,18 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
                 React.createElement("button", { type: "button", onClick: () => setModoMovil(!modoMovil), className: `qc-toggle${modoMovil ? " on" : ""}`, "aria-pressed": modoMovil },
                     React.createElement("span", { className: "qc-toggle-knob" }),
                     React.createElement("span", { className: "qc-toggle-label" }, modoMovil ? "Activado" : "Desactivado"))),
+            lesionadosPendientes.length > 0 && React.createElement("div", { className: "card2 p-3 space-y-2", style: { borderColor: "#fecaca", background: "#fef2f2" } },
+                React.createElement("div", { className: "text-xs font-bold text-red-700 flex items-center gap-1.5" },
+                    React.createElement(Icon, { size: 14 }, "\uD83D\uDE91"),
+                    " \u00BFSiguen lesionados estos jugadores? Si ya se recuperaron, no van a poder ser titulares hasta que lo confirmes."),
+                lesionadosPendientes.map((p) => React.createElement("div", { key: p.id, className: "flex items-center justify-between gap-2 bg-white rounded-lg px-3 py-2 text-sm" },
+                    React.createElement("span", null,
+                        p.nombre,
+                        " ",
+                        React.createElement("span", { className: "text-zinc-400 text-xs" }, `(le quedaban ${p.jornadasLesionado} jornada(s))`)),
+                    React.createElement("div", { className: "flex gap-2 shrink-0" },
+                        React.createElement("button", { onClick: () => confirmarLesion(p.id, true), className: "text-xs px-2.5 py-1.5 rounded-lg font-semibold bg-red-50 text-red-600 hover:bg-red-100" }, "\uD83E\uDE7A Sigue lesionado"),
+                        React.createElement("button", { onClick: () => confirmarLesion(p.id, false), className: "text-xs px-2.5 py-1.5 rounded-lg font-semibold bg-green-50 text-green-600 hover:bg-green-100" }, "\u2705 Ya se recuper\u00F3"))))),
             React.createElement("div", { className: "card2 p-4" },
                 React.createElement("div", { className: "section-header -mx-4 -mt-4 mb-3 px-4 py-2 text-center" }, "Marcador"),
                 React.createElement("div", { className: "flex items-center justify-center gap-4" },
@@ -4136,7 +4220,7 @@ function JugarPartidoInterno({ teams, players, setPlayers, jornadas, setJornadas
                 React.createElement(EquipoAlineacion, { nombre: localTeam === null || localTeam === void 0 ? void 0 : localTeam.nombre, squad: localSquad, team: localTeam, lineup: localLineup, setLineup: setLocalLineup }),
                 React.createElement(EquipoAlineacion, { nombre: visTeam === null || visTeam === void 0 ? void 0 : visTeam.nombre, squad: visSquad, team: visTeam, lineup: visLineup, setLineup: setVisLineup })),
             modoMovil
-                ? React.createElement(CapturaMovilPanel, { localTeam, visTeam, localSquad, visSquad, localXI, visXI, localEnCancha, visEnCancha, eventos, tarjetas, subs, golesLocal, golesVis, minutoActual, setMinutoActualInmediato, extraActual, setExtraActualInmediato, setEventosInmediato, setTarjetasInmediato, setSubsInmediato })
+                ? React.createElement(CapturaMovilPanel, { localTeam, visTeam, localSquad, visSquad, localXI, visXI, localEnCancha, visEnCancha, eventos, tarjetas, subs, golesLocal, golesVis, minutoActual, setMinutoActualInmediato, extraActual, setExtraActualInmediato, setEventosInmediato, setTarjetasInmediato, setSubsInmediato, lesiones, setLesionesInmediato })
                 : React.createElement(React.Fragment, null,
                     React.createElement(EventosPanel, { squad: squadEnCancha, squadCompleto: [...localSquad, ...visSquad], eventos: eventos, setEventos: setEventos, localSquad: localSquadEnCancha }),
                     React.createElement(TarjetasPanel, { squad: squadEnCancha, squadCompleto: [...localSquad, ...visSquad], tarjetas: tarjetas, setTarjetas: setTarjetas, lesiones: lesiones, setLesiones: setLesiones }),
@@ -4394,9 +4478,8 @@ function TarjetasPanel({ squad, squadCompleto, tarjetas, setTarjetas, lesiones, 
     const [minuto, setMinuto] = useState(1);
     const [extra, setExtra] = useState(0);
     const [lesionado, setLesionado] = useState(false);
-    const [gravedad, setGravedad] = useState(1);
     const [editId, setEditId] = useState(null);
-    const limpiar = () => { setJugador(""); setTipo("amarilla"); setMinuto(1); setExtra(0); setLesionado(false); setGravedad(1); setEditId(null); };
+    const limpiar = () => { setJugador(""); setTipo("amarilla"); setMinuto(1); setExtra(0); setLesionado(false); setEditId(null); };
     const editar = (t) => {
         setEditId(t.id);
         setJugador(t.jugador || "");
@@ -4404,7 +4487,6 @@ function TarjetasPanel({ squad, squadCompleto, tarjetas, setTarjetas, lesiones, 
         setMinuto(t.minuto || 1);
         setExtra(t.extra || 0);
         setLesionado(false);
-        setGravedad(1);
     };
     const add = () => {
         if (!jugador)
@@ -4416,8 +4498,10 @@ function TarjetasPanel({ squad, squadCompleto, tarjetas, setTarjetas, lesiones, 
         else {
             setTarjetas([...tarjetas, { id: uid("tj"), jugador, tipo, minuto, extra }]);
         }
+        // La duración de la lesión (cuántas jornadas de baja) se define después, desde Sanciones → Lesionados —
+        // acá solo se deja constancia de que el jugador salió lesionado, con 1 jornada de baja por defecto.
         if (lesionado)
-            setLesiones([...lesiones, { id: uid("les"), jugador, gravedad, origen: "tarjeta" }]);
+            setLesiones([...lesiones, { id: uid("les"), jugador, gravedad: 1, origen: "tarjeta" }]);
         if (!editId) {
             if (tipo === "roja")
                 alert("\uD83D\uDFE5 Roja directa: jugador expulsado.");
@@ -4444,10 +4528,8 @@ function TarjetasPanel({ squad, squadCompleto, tarjetas, setTarjetas, lesiones, 
         React.createElement("div", { className: "px-3 pb-3 flex flex-wrap gap-2 items-center text-xs" },
             React.createElement("label", { className: "flex items-center gap-1.5 cursor-pointer" },
                 React.createElement("input", { type: "checkbox", checked: lesionado, onChange: (e) => setLesionado(e.target.checked) }),
-                "\uD83D\uDE91 \u00BFSufri\u00F3 lesi\u00F3n?"),
-            lesionado && React.createElement("select", { value: gravedad, onChange: (e) => setGravedad(+e.target.value) },
-                React.createElement("option", { value: 1 }, "Leve (1 jornada)"),
-                React.createElement("option", { value: 2 }, "Moderada (2 jornadas)"))),
+                "\uD83D\uDE91 \u00BFSali\u00F3 lesionado?"),
+            lesionado && React.createElement("span", { className: "text-zinc-400" }, "(la duraci\u00F3n de la baja se define despu\u00E9s, en Sanciones \u2192 Lesionados)")),
         React.createElement("div", { className: "space-y-1 text-xs max-h-28 overflow-y-auto p-3" }, tarjetas.map((t) => { const j = squadCompleto.find((p) => p.id === t.jugador); const expulsado = jugadorExpulsadoEnPartido(tarjetas, t.jugador); return (React.createElement("div", { key: t.id, className: `flex justify-between bg-zinc-50 rounded-lg px-2 py-1.5${t.id === editId ? " ring-2 ring-amber-300" : ""}` },
             React.createElement("span", null,
                 t.tipo === "amarilla" ? "🟨" : "🟥",
@@ -4464,7 +4546,7 @@ function TarjetasPanel({ squad, squadCompleto, tarjetas, setTarjetas, lesiones, 
                     "\uD83D\uDE91 ", j === null || j === void 0 ? void 0 :
                     j.nombre,
                     " ",
-                    React.createElement("span", { className: "text-zinc-400" }, l.gravedad === 2 ? "(moderada, 2 jornadas)" : "(leve, 1 jornada)")),
+                    React.createElement("span", { className: "text-zinc-400" }, "(la duraci\u00F3n se define en Sanciones \u2192 Lesionados)")),
                 React.createElement("button", { onClick: () => setLesiones(lesiones.filter((x) => x.id !== l.id)) }, "\u2715"))); }))));
 }
 function SustitucionesPanel({ localXI, visXI, localSquad, visSquad, localEnCancha, visEnCancha, subs, setSubs, lesiones, setLesiones }) {
@@ -4474,7 +4556,6 @@ function SustitucionesPanel({ localXI, visXI, localSquad, visSquad, localEnCanch
     const [minuto, setMinuto] = useState(46);
     const [extra, setExtra] = useState(0);
     const [lesionado, setLesionado] = useState(false);
-    const [gravedad, setGravedad] = useState(1);
     const [editId, setEditId] = useState(null);
     const xiActual = equipo === "local" ? localXI : visXI;
     const squadActual = equipo === "local" ? localSquad : visSquad;
@@ -4482,7 +4563,7 @@ function SustitucionesPanel({ localXI, visXI, localSquad, visSquad, localEnCanch
     // La banca son jugadores que ni empezaron de titulares ni ya entraron de cambio (y no han sido expulsados desde la banca, imposible).
     // Al editar una sustitución existente, se incluye también al jugador que ya entraba en ese cambio, para no perderlo del select.
     const banca = squadActual.filter((p) => (!xiActual.includes(p.id) && !subs.some((s) => s.entra === p.id && s.id !== editId)) || p.id === entra);
-    const limpiar = () => { setSale(""); setEntra(""); setMinuto(46); setExtra(0); setLesionado(false); setGravedad(1); setEditId(null); };
+    const limpiar = () => { setSale(""); setEntra(""); setMinuto(46); setExtra(0); setLesionado(false); setEditId(null); };
     const editar = (s) => {
         setEditId(s.id);
         setEquipo(s.equipo || "local");
@@ -4491,7 +4572,6 @@ function SustitucionesPanel({ localXI, visXI, localSquad, visSquad, localEnCanch
         setMinuto(s.minuto || 46);
         setExtra(s.extra || 0);
         setLesionado(false);
-        setGravedad(1);
     };
     const add = () => {
         if (!sale || !entra)
@@ -4502,8 +4582,9 @@ function SustitucionesPanel({ localXI, visXI, localSquad, visSquad, localEnCanch
         else {
             setSubs([...subs, { id: uid("sub"), equipo, sale, entra, minuto, extra }]);
         }
+        // La duración de la lesión se define después, desde Sanciones → Lesionados.
         if (lesionado)
-            setLesiones([...lesiones, { id: uid("les"), jugador: sale, gravedad, origen: "cambio" }]);
+            setLesiones([...lesiones, { id: uid("les"), jugador: sale, gravedad: 1, origen: "cambio" }]);
         limpiar();
     };
     const lesionesCambio = lesiones.filter((l) => l.origen === "cambio");
@@ -4528,9 +4609,7 @@ function SustitucionesPanel({ localXI, visXI, localSquad, visSquad, localEnCanch
             React.createElement("label", { className: "flex items-center gap-1.5 cursor-pointer" },
                 React.createElement("input", { type: "checkbox", checked: lesionado, onChange: (e) => setLesionado(e.target.checked) }),
                 "\uD83D\uDE91 \u00BFSali\u00F3 lesionado?"),
-            lesionado && React.createElement("select", { value: gravedad, onChange: (e) => setGravedad(+e.target.value) },
-                React.createElement("option", { value: 1 }, "Leve (1 jornada)"),
-                React.createElement("option", { value: 2 }, "Moderada (2 jornadas)"))),
+            lesionado && React.createElement("span", { className: "text-zinc-400" }, "(la duraci\u00F3n de la baja se define despu\u00E9s, en Sanciones \u2192 Lesionados)")),
         React.createElement("div", { className: "space-y-1 text-xs max-h-28 overflow-y-auto p-3" }, subs.map((s) => { const sq = s.equipo === "local" ? localSquad : visSquad; const j1 = sq.find((p) => p.id === s.sale), j2 = sq.find((p) => p.id === s.entra); return (React.createElement("div", { key: s.id, className: `flex justify-between bg-zinc-50 rounded-lg px-2 py-1.5${s.id === editId ? " ring-2 ring-amber-300" : ""}` },
             React.createElement("span", null,
                 "\uD83D\uDD3B", j1 === null || j1 === void 0 ? void 0 :
@@ -4547,7 +4626,7 @@ function SustitucionesPanel({ localXI, visXI, localSquad, visSquad, localEnCanch
                     "\uD83D\uDE91 ", j === null || j === void 0 ? void 0 :
                     j.nombre,
                     " ",
-                    React.createElement("span", { className: "text-zinc-400" }, l.gravedad === 2 ? "(moderada, 2 jornadas)" : "(leve, 1 jornada)")),
+                    React.createElement("span", { className: "text-zinc-400" }, "(la duraci\u00F3n se define en Sanciones \u2192 Lesionados)")),
                 React.createElement("button", { onClick: () => setLesiones(lesiones.filter((x) => x.id !== l.id)) }, "\u2715"))); }))));
 }
 // Grilla de botones grandes táctiles para elegir un jugador de un toque (usada por la Captura rápida / Modo Móvil).
@@ -4564,7 +4643,7 @@ const ORIGEN_CAPTURA_MOVIL = "movil";
 // asistencias, tarjetas y cambios de un toque, sin tener que desplazarse por los paneles clásicos. Cada acción
 // se guarda inmediatamente (borrador + localStorage) mediante los setters "Inmediato" que recibe por props.
 const MINUTO_FIN_PRIMER_TIEMPO = 45;
-function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, visXI, localEnCancha, visEnCancha, eventos, tarjetas, subs, golesLocal, golesVis, minutoActual, setMinutoActualInmediato, extraActual, setExtraActualInmediato, setEventosInmediato, setTarjetasInmediato, setSubsInmediato }) {
+function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, visXI, localEnCancha, visEnCancha, eventos, tarjetas, subs, golesLocal, golesVis, minutoActual, setMinutoActualInmediato, extraActual, setExtraActualInmediato, setEventosInmediato, setTarjetasInmediato, setSubsInmediato, lesiones, setLesionesInmediato }) {
     const [accion, setAccion] = useState(null);
     const [corriendo, setCorriendo] = useState(false);
     // Cronómetro: mientras está en marcha, suma un minuto de partido cada MS_POR_MINUTO_CRONOMETRO (velocidad
@@ -4600,7 +4679,8 @@ function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, 
         return squadActual.filter((p) => !xiActual.includes(p.id) && !subs.some((s) => s.entra === p.id));
     };
     const [etiquetaSel, setEtiquetaSel] = useState(null);
-    const cerrar = () => { setAccion(null); setEtiquetaSel(null); };
+    const [lesionadoSel, setLesionadoSel] = useState(false);
+    const cerrar = () => { setAccion(null); setEtiquetaSel(null); setLesionadoSel(false); };
     const agregarGol = (equipo, jugadorId, propia, asistenciaId, etiqueta) => {
         const equipoFinal = propia ? (equipo === "local" ? "vis" : "local") : equipo;
         const nuevo = { id: uid("gol"), equipo: equipoFinal, jugador: jugadorId, asistencia: propia ? null : (asistenciaId || null), minuto: minutoActual, extra: extraActual || 0, propia: !!propia, etiqueta: etiqueta || null, origenCaptura: ORIGEN_CAPTURA_MOVIL, creadoEn: Date.now() };
@@ -4628,8 +4708,12 @@ function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, 
             alert("\uD83D\uDFE8\uD83D\uDFE8 Segunda amarilla: jugador expulsado.");
         cerrar();
     };
-    const agregarCambio = (equipo, saleId, entraId) => {
+    const agregarCambio = (equipo, saleId, entraId, lesionado) => {
         setSubsInmediato([...subs, { id: uid("sub"), equipo, sale: saleId, entra: entraId, minuto: minutoActual, extra: extraActual || 0, origenCaptura: ORIGEN_CAPTURA_MOVIL, creadoEn: Date.now() }]);
+        // La duración de la lesión se define después, desde Sanciones → Lesionados.
+        if (lesionado)
+            setLesionesInmediato([...lesiones, { id: uid("les"), jugador: saleId, gravedad: 1, origen: "cambio" }]);
+        setLesionadoSel(false);
         cerrar();
     };
     // Deshacer: encuentra la última carga (gol, tarjeta o cambio) hecha desde este modo, sin importar el tipo,
@@ -4729,11 +4813,15 @@ function CapturaMovilPanel({ localTeam, visTeam, localSquad, visSquad, localXI, 
                 vacio: "No hay jugadores en cancha todav\u00EDa.",
                 onPick: (jugadorId) => setAccion({ ...accion, paso: "entra", sale: jugadorId }),
             }),
-            accion.tipo === "cambio" && accion.paso === "entra" && React.createElement(QcPlayerGrid, {
-                jugadores: bancaDe(accion.equipo),
-                vacio: "No hay banca disponible.",
-                onPick: (jugadorId) => agregarCambio(accion.equipo, accion.sale, jugadorId),
-            }),
+            accion.tipo === "cambio" && accion.paso === "entra" && React.createElement(React.Fragment, null,
+                React.createElement("label", { className: "qc-propia-toggle" },
+                    React.createElement("input", { type: "checkbox", checked: lesionadoSel, onChange: (e) => setLesionadoSel(e.target.checked) }),
+                    `\uD83D\uDE91 ${nombreDe(accion.sale)} sale lesionado`),
+                React.createElement(QcPlayerGrid, {
+                    jugadores: bancaDe(accion.equipo),
+                    vacio: "No hay banca disponible.",
+                    onPick: (jugadorId) => agregarCambio(accion.equipo, accion.sale, jugadorId, lesionadoSel),
+                })),
             accion.tipo === "asistencia" && (golPendienteAsistencia
                 ? React.createElement(React.Fragment, null,
                     React.createElement("div", { className: "qc-picker-sub" }, `\u00DAltimo gol: ${nombreDe(golPendienteAsistencia.jugador)} (${fmtMinuto(golPendienteAsistencia.minuto, golPendienteAsistencia.extra || 0)})`),
@@ -4855,8 +4943,31 @@ function MercadoInterno({ teams, setTeams, players, setPlayers, transfers, setTr
     const [jugadorB, setJugadorB] = useState("");
     const [dineroAaB, setDineroAaB] = useState(0);
     const [dineroBaA, setDineroBaA] = useState(0);
-    const squadA = players.filter((p) => p.equipoId === equipoA);
-    const squadB = players.filter((p) => p.equipoId === equipoB);
+    const [busqueda, setBusqueda] = useState("");
+    const [filtroPos, setFiltroPos] = useState("");
+    const [grlMin, setGrlMin] = useState("");
+    const [grlMax, setGrlMax] = useState("");
+    const [precioMin, setPrecioMin] = useState("");
+    const [precioMax, setPrecioMax] = useState("");
+    const hayFiltros = busqueda || filtroPos || grlMin !== "" || grlMax !== "" || precioMin !== "" || precioMax !== "";
+    const limpiarFiltros = () => { setBusqueda(""); setFiltroPos(""); setGrlMin(""); setGrlMax(""); setPrecioMin(""); setPrecioMax(""); };
+    const pasaFiltros = (p) => {
+        if (busqueda.trim() && !p.nombre.toLowerCase().includes(busqueda.trim().toLowerCase()))
+            return false;
+        if (filtroPos && p.posicion !== filtroPos)
+            return false;
+        if (grlMin !== "" && p.valoracion < Number(grlMin))
+            return false;
+        if (grlMax !== "" && p.valoracion > Number(grlMax))
+            return false;
+        if (precioMin !== "" && (p.valorMercado || 0) < Number(precioMin))
+            return false;
+        if (precioMax !== "" && (p.valorMercado || 0) > Number(precioMax))
+            return false;
+        return true;
+    };
+    const squadA = players.filter((p) => p.equipoId === equipoA && pasaFiltros(p));
+    const squadB = players.filter((p) => p.equipoId === equipoB && pasaFiltros(p));
     const teamA = teams.find((t) => t.id === equipoA), teamB = teams.find((t) => t.id === equipoB);
     const hacerFichaje = () => {
         if (!jugadorA || !jugadorB) {
@@ -4913,6 +5024,23 @@ function MercadoInterno({ teams, setTeams, players, setPlayers, transfers, setTr
                 fmtMoney(t.presupuesto)))))),
         React.createElement("div", { className: "card2" },
             React.createElement("div", { className: "section-header px-4 py-2.5 flex items-center gap-2" }, "\uD83D\uDD01 Intercambio de jugadores"),
+            React.createElement("div", { className: "px-4 pt-3 space-y-2" },
+                React.createElement("input", { className: "w-full", placeholder: "Buscar por nombre\u2026", value: busqueda, onChange: (e) => setBusqueda(e.target.value) }),
+                React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs" },
+                    React.createElement(Field, { label: "Posici\u00F3n" },
+                        React.createElement("select", { className: "w-full", value: filtroPos, onChange: (e) => setFiltroPos(e.target.value) },
+                            React.createElement("option", { value: "" }, "Todas"),
+                            POSICIONES.map((pos) => React.createElement("option", { key: pos, value: pos }, pos)))),
+                    React.createElement(Field, { label: "GRL m\u00EDn." },
+                        React.createElement("input", { type: "number", min: 60, max: 99, className: "w-full", placeholder: "60", value: grlMin, onChange: (e) => setGrlMin(e.target.value) })),
+                    React.createElement(Field, { label: "GRL m\u00E1x." },
+                        React.createElement("input", { type: "number", min: 60, max: 99, className: "w-full", placeholder: "99", value: grlMax, onChange: (e) => setGrlMax(e.target.value) })),
+                    React.createElement(Field, { label: "Precio m\u00EDn." },
+                        React.createElement("input", { type: "number", min: 0, step: 1000, className: "w-full", placeholder: "$0", value: precioMin, onChange: (e) => setPrecioMin(e.target.value) })),
+                    React.createElement(Field, { label: "Precio m\u00E1x." },
+                        React.createElement("input", { type: "number", min: 0, step: 1000, className: "w-full", placeholder: "Sin l\u00EDmite", value: precioMax, onChange: (e) => setPrecioMax(e.target.value) }))),
+                hayFiltros && React.createElement("button", { type: "button", onClick: limpiarFiltros, className: "text-[11px] font-bold text-zinc-500 hover:text-zinc-700" }, "\u2715 Limpiar filtros"),
+                React.createElement("p", { className: "text-[11px] text-zinc-400" }, "Los filtros acotan los jugadores que aparecen en los selectores de abajo, para ambos equipos.")),
             React.createElement("div", { className: "p-4 grid md:grid-cols-2 gap-4" },
                 React.createElement("div", { className: "space-y-2" },
                     React.createElement("select", { className: "w-full", value: equipoA, onChange: (e) => { setEquipoA(e.target.value); setJugadorA(""); } },
@@ -5538,8 +5666,9 @@ function Sanciones({ players, setPlayers, teams }) {
                     lesionados.map((p) => (React.createElement("tr", { key: p.id, className: "row-line" },
                         React.createElement("td", { className: "py-2 pl-4", "data-label": "Jugador" }, p.nombre),
                         React.createElement("td", { className: "text-center text-zinc-500", "data-label": "Equipo" }, teamName(p.equipoId)),
-                        React.createElement("td", { className: "text-center", "data-label": "Jornadas restantes" }, React.createElement("span", { className: "text-red-500 font-black" }, p.jornadasLesionado)),
-                        React.createElement("td", { className: "text-center pr-4" }, React.createElement("button", { onClick: () => altaMedica(p.id), className: "text-xs px-2 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200" }, "Alta m\u00E9dica (\u22121 jornada)"))))),
+                        React.createElement("td", { className: "text-center", "data-label": "Jornadas restantes" },
+                            React.createElement(NumberField, { min: 0, value: p.jornadasLesionado || 0, onCommit: (n) => setPlayers(players.map((x) => x.id === p.id ? { ...x, jornadasLesionado: Math.max(0, n) } : x)) })),
+                        React.createElement("td", { className: "text-center pr-4" }, React.createElement("button", { onClick: () => altaMedica(p.id), className: "text-xs px-2 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200" }, "\u2705 Alta m\u00E9dica")))))    ,
                     !lesionados.length && React.createElement("tr", null,
                         React.createElement("td", { colSpan: 4, className: "text-center text-zinc-500 py-8" }, "Sin lesiones registradas.")))))));
 }
