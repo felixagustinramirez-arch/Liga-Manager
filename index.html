@@ -21,6 +21,19 @@
 <link rel="apple-touch-icon" sizes="152x152" href="./icons/apple-touch-icon-152.png" />
 <link rel="apple-touch-icon" sizes="120x120" href="./icons/apple-touch-icon-120.png" />
 
+<!-- Splash screens de iOS: sin flash blanco al abrir la app desde el ícono, portrait 1x y 2x/3x -->
+<link rel="apple-touch-startup-image" href="./splash/splash-640x1136.png" media="(device-width: 320px) and (device-height: 568px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" />
+<link rel="apple-touch-startup-image" href="./splash/splash-750x1334.png" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" />
+<link rel="apple-touch-startup-image" href="./splash/splash-828x1792.png" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" />
+<link rel="apple-touch-startup-image" href="./splash/splash-1125x2436.png" media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+<link rel="apple-touch-startup-image" href="./splash/splash-1170x2532.png" media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+<link rel="apple-touch-startup-image" href="./splash/splash-1179x2556.png" media="(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+<link rel="apple-touch-startup-image" href="./splash/splash-1284x2778.png" media="(device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+<link rel="apple-touch-startup-image" href="./splash/splash-1290x2796.png" media="(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+
+<!-- Evita que iOS convierta números (ej. salarios, valores de mercado) en enlaces de teléfono -->
+<meta name="format-detection" content="telephone=no" />
+
 <!-- Favicon / icono general -->
 <link rel="icon" type="image/png" sizes="32x32" href="./icons/icon-32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="./icons/icon-16.png" />
@@ -51,7 +64,8 @@
   }
 </script>
 <style>
-  html,body{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  html,body{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;overscroll-behavior-y:none;-webkit-tap-highlight-color:transparent;}
+  button, a, [role="button"] { -webkit-tap-highlight-color:transparent; }
   *{box-sizing:border-box;}
 .flex{display:flex}
 .grid{display:grid}
@@ -358,11 +372,11 @@
   /* ---- Móvil (portrait y landscape, hasta tablet chico): el sidebar pasa a ser un cajón (drawer) que se
      desliza por encima del contenido en vez de empujarlo, para no robarle ancho a las secciones. ---- */
   @media (max-width:900px){
+    /* Safari hace zoom automático al enfocar un campo si su letra mide menos de 16px; con 16px no lo hace. */
+    input[type=text], input[type=number], input[type=search], input[type=email], input[type=password], input[type=date], select, textarea, input:not([type]) { font-size:16px; }
     .sidebar-spacer { width:0; }
     .sidebar, .sidebar.collapsed, .sidebar:not(.collapsed) { width:250px; max-width:82vw; transform:translateX(-100%); transition:transform .22s ease; box-shadow:none; }
-    .sidebar.mobile-open, .sidebar.mobile-open.collapsed, .sidebar.mobile-open:not(.collapsed) { transform:translateX(0); box-shadow:4px 0 28px rgba(0,0,0,.35); }
-    .sidebar.mobile-open.collapsed .sidebar-brand-text,
-    .sidebar.mobile-open.collapsed .sidebar-link .label { display:block; }
+    .sidebar.mobile-open { transform:translateX(0); box-shadow:4px 0 28px rgba(0,0,0,.35); }
     .sidebar.mobile-open .sidebar-link { justify-content:flex-start; padding:9px 10px; }
     .sidebar-brand { justify-content:flex-start; padding:calc(16px + env(safe-area-inset-top)) 14px 16px; }
     .sidebar-mobile-close { display:flex; align-items:center; justify-content:center; position:absolute; top:calc(12px + env(safe-area-inset-top)); right:10px; width:30px; height:30px; border-radius:8px; background:rgba(255,255,255,.14); color:#fff; border:none; font-size:15px; cursor:pointer; }
@@ -2118,7 +2132,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
 function Sidebar({ NAV, tab, goTab, collapsed, setCollapsed, mobileOpen, onCloseMobile }) {
     // En móvil el sidebar funciona como cajón (drawer): ignora "collapsed" y se muestra siempre expandido
     // con etiquetas, controlado por mobileOpen/onCloseMobile en vez de por el ancho fijo de escritorio.
-    const collapsedEfectivo = collapsed;
+    const collapsedEfectivo = mobileOpen ? false : collapsed;
     return React.createElement("aside", { className: `sidebar${collapsedEfectivo ? " collapsed" : ""}${mobileOpen ? " mobile-open" : ""}` },
         React.createElement("button", { className: "sidebar-brand", onClick: () => setCollapsed(!collapsed), title: collapsed ? "Expandir men\u00FA" : "Contraer men\u00FA", "aria-label": "Contraer o expandir men\u00FA", type: "button" },
             React.createElement("img", { src: LOGO_LIGA, alt: "Liga KONAMI", style: { width: 26, height: 26, objectFit: "contain", flexShrink: 0 } }),
