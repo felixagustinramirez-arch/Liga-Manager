@@ -826,19 +826,14 @@ function exportarPlantelCsv(team, squad) {
 // valores que espera cada columna (posición válida, dorsal, etc.) y otra fila mostrando un comodín (se
 // identifican solo por el dorsal, 31 o 32; la Valoracion que tengan en el CSV no importa, la app la
 // reemplaza igual por el GRL fijo de comodín), lista para duplicar por cada jugador y después importar
-// con "Importar equipo desde CSV".
+// con "Importar equipo desde CSV". Solo lleva las columnas mínimas (Equipo, NombreJugador, Dorsal,
+// Valoracion, Posicion); el resto de los campos del equipo y de cada jugador (Escudo, Presupuesto,
+// Goles, etc.) no hace falta incluirlos: quedan con sus valores predeterminados al importar.
+const CAMPOS_PLANTILLA_CSV = ["Equipo", "NombreJugador", "Dorsal", "Valoracion", "Posicion"];
 function descargarPlantillaEquipoCsv() {
-    const filaEjemplo = [
-        "Nombre del Equipo", "", PRESUPUESTO_BASE, PRESUPUESTO_BASE,
-        "Nombre del Jugador", "", 1, 82, "MC", "",
-        0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, "normal",
-    ];
-    const filaComodin = [
-        "Nombre del Equipo", "", PRESUPUESTO_BASE, PRESUPUESTO_BASE,
-        `Comod\u00edn #${DORSALES_COMODIN[0]}`, "", DORSALES_COMODIN[0], GRL_COMODIN, "MC", "",
-        0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, "normal",
-    ];
-    const filas = [[...CAMPOS_EQUIPO_CSV, ...CAMPOS_JUGADOR_CSV], filaEjemplo, filaComodin];
+    const filaEjemplo = ["Nombre del Equipo", "Nombre del Jugador", 1, 82, "MC"];
+    const filaComodin = ["Nombre del Equipo", `Comod\u00edn #${DORSALES_COMODIN[0]}`, DORSALES_COMODIN[0], GRL_COMODIN, "MC"];
+    const filas = [CAMPOS_PLANTILLA_CSV, filaEjemplo, filaComodin];
     descargarCsv("plantilla-equipo-en-blanco.csv", filas);
 }
 // Parser de CSV genérico: soporta campos entre comillas con comas, comillas escapadas ("") y saltos de
@@ -909,7 +904,7 @@ function importarEquipoDesdeCsv(texto) {
         asistencias: Number(get(fila, "Asistencias", 0)) || 0,
         partidosJugados: Number(get(fila, "PartidosJugados", 0)) || 0,
         minutosJugados: Number(get(fila, "MinutosJugados", 0)) || 0,
-        scores: (get(fila, "Scores", "") || "").split(";").map((n) => Number(n)).filter((n) => n !== undefined && n !== null && !isNaN(n)),
+        scores: (get(fila, "Scores", "") || "").split(";").map((n) => n.trim()).filter((n) => n !== "").map((n) => Number(n)).filter((n) => !isNaN(n)),
         amarillas: Number(get(fila, "Amarillas", 0)) || 0,
         rojas: Number(get(fila, "Rojas", 0)) || 0,
         sancionJornadas: Number(get(fila, "SancionJornadas", 0)) || 0,
