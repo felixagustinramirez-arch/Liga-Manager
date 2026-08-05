@@ -2704,7 +2704,7 @@ function EquiposLista({ teams, setTeams, players, setPlayers, onOpen }) {
             React.createElement("button", { onClick: addTeam, disabled: teams.length >= MAX_EQUIPOS, className: "btn-olive rounded-full px-5 font-semibold disabled:opacity-40" }, "A\u00F1adir")),
         React.createElement("div", { className: "flex flex-wrap gap-2" },
             React.createElement("input", { ref: fileRef, type: "file", accept: ".csv,text/csv", onChange: importarCsv, style: { display: "none" } }),
-            React.createElement("button", { type: "button", onClick: importarClick, disabled: teams.length >= MAX_EQUIPOS, className: "text-xs px-3 py-1.5 rounded-full font-semibold bg-zinc-100 hover:bg-zinc-200 disabled:opacity-40" }, "\u2B06\uFE0F Importar equipo desde CSV"),
+            React.createElement("button", { type: "button", onClick: importarClick, className: "text-xs px-3 py-1.5 rounded-full font-semibold bg-zinc-100 hover:bg-zinc-200" }, "\u2B06\uFE0F Importar equipo desde CSV"),
             React.createElement("button", { type: "button", onClick: descargarPlantillaEquipoCsv, className: "text-xs px-3 py-1.5 rounded-full font-semibold bg-zinc-100 hover:bg-zinc-200" }, "\uD83D\uDCC4 Plantilla en blanco")),
         teams.length > 1 && React.createElement("div", { className: "text-xs text-zinc-500 px-1" }, "Usa \u2191/\u2193 para poner los equipos en el mismo orden que tienen en el juego. Ese orden se usa como criterio final de desempate cuando dos equipos quedan totalmente empatados en la tabla."),
         React.createElement("div", { className: "card2" },
