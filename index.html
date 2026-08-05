@@ -2660,16 +2660,24 @@ function EquiposLista({ teams, setTeams, players, setPlayers, onOpen }) {
         reader.onload = (ev) => {
             try {
                 const { team, players: nuevosJugadores } = importarEquipoDesdeCsv(String(ev.target.result));
-                if (teams.length >= MAX_EQUIPOS) {
-                    alert(`Ya hay ${MAX_EQUIPOS} equipos, el máximo permitido. Borra o fusiona alguno antes de importar otro.`);
-                    return;
-                }
                 if (nuevosJugadores.length > MAX_JUGADORES) {
                     alert(`Ese CSV trae ${nuevosJugadores.length} jugadores; el máximo por plantilla es ${MAX_JUGADORES}. Se importan los primeros ${MAX_JUGADORES}.`);
                 }
                 const jugadoresFinales = nuevosJugadores.slice(0, MAX_JUGADORES);
-                if (teams.some((t) => t.nombre.trim().toLowerCase() === team.nombre.trim().toLowerCase()) && !confirm(`Ya existe un equipo llamado "${team.nombre}". ¿Importar igual como un equipo nuevo y separado?`))
+                const existente = teams.find((t) => t.nombre.trim().toLowerCase() === team.nombre.trim().toLowerCase());
+                if (existente) {
+                    if (!confirm(`Ya existe un equipo llamado "${existente.nombre}". Se reemplazarán su escudo, presupuesto y plantilla actuales por los del CSV. ¿Continuar?`))
+                        return;
+                    const jugadoresReasignados = jugadoresFinales.map((p) => ({ ...p, equipoId: existente.id }));
+                    setTeams(teams.map((t) => t.id === existente.id ? { ...existente, nombre: team.nombre, escudo: team.escudo, presupuesto: team.presupuesto, presupuestoBase: team.presupuestoBase } : t));
+                    setPlayers([...players.filter((p) => p.equipoId !== existente.id), ...jugadoresReasignados]);
+                    alert(`"${team.nombre}" reemplazado con ${jugadoresFinales.length} jugador${jugadoresFinales.length === 1 ? "" : "es"}.`);
                     return;
+                }
+                if (teams.length >= MAX_EQUIPOS) {
+                    alert(`Ya hay ${MAX_EQUIPOS} equipos, el máximo permitido. Borra o fusiona alguno antes de importar otro.`);
+                    return;
+                }
                 setTeams([...teams, team]);
                 setPlayers([...players, ...jugadoresFinales]);
                 alert(`"${team.nombre}" importado con ${jugadoresFinales.length} jugador${jugadoresFinales.length === 1 ? "" : "es"}.`);
