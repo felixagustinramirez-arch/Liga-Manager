@@ -577,13 +577,13 @@
 const { useState, useEffect, useMemo, useRef } = React;
 // ---------- Constantes ----------
 const POSICIONES = ["PT", "DEC", "LI", "LD", "MCD", "MC", "MP", "ID", "II", "EI", "ED", "SP", "DC"];
-const MAX_EQUIPOS = 18;
+const MAX_EQUIPOS = 30;
 const MAX_JUGADORES = 32;
-const JORNADAS_TOTAL = 34;
-const PARTIDOS_POR_JORNADA = 9;
+const JORNADAS_TOTAL = 29;
+const PARTIDOS_POR_JORNADA = 15;
 // Jornadas de Apertura y Clausura en las que, al completarse, se reparte un plus económico
 // entre los equipos según su posición en la tabla de esa fase en ese momento.
-const JORNADAS_BONO = new Set([3, 7, 10, 14, 17, 21, 24, 27, 30, 34]);
+const JORNADAS_BONO = new Set([3, 6, 9, 12, 15, 18, 21, 24, 27, 29]);
 const PRESUPUESTO_BASE = 5000000;
 const DORSALES_COMODIN = [31, 32];
 const GRL_COMODIN = 85;
@@ -1322,7 +1322,7 @@ function jornadaCompleta(jornada) {
     const activos = (jornada && jornada.partidos ? jornada.partidos : []).filter((p) => p.local && p.visitante);
     return activos.length > 0 && activos.every((p) => p.jugado);
 }
-// Una fase (Apertura o Clausura) está completa cuando existen sus 34 jornadas y todas están completas.
+// Una fase (Apertura o Clausura) está completa cuando existen sus 29 jornadas y todas están completas.
 function faseCompleta(jornadas) {
     return !!jornadas && jornadas.length > 0 && jornadas.every(jornadaCompleta);
 }
@@ -1408,6 +1408,10 @@ function calcularTablaAnterior(teams, gruposDeJornadas) {
 // por tabla general, saltando cualquier equipo que ya haya entrado por la vía parcial (el cupo pasa al siguiente).
 // Si un equipo clasifica dos veces por la vía parcial (p. ej. es 1° en Apertura y también 1° en Clausura),
 // el cupo repetido no bloquea la liguilla: se le asigna directo al siguiente equipo disponible en la tabla general.
+// Calcula los 16 clasificados a la Liguilla: los 5 mejores de Apertura, los 5 mejores de Clausura y los
+// 6 mejores de la tabla general (Apertura + Clausura combinadas). Si un equipo ya clasificó por Apertura o
+// Clausura, su cupo de la tabla general pasa automáticamente al siguiente disponible en esa tabla, para
+// evitar duplicados manteniendo siempre 16 equipos en total (mismo formato aunque haya repetidos).
 function calcularClasificadosLiguilla(tablaApertura, tablaClausura, tablaGeneral) {
     const usados = new Set();
     const siguienteDeGeneral = () => {
@@ -1431,12 +1435,18 @@ function calcularClasificadosLiguilla(tablaApertura, tablaClausura, tablaGeneral
     const parciales = [
         resolverParcial("1\u00B0 Apertura", tablaApertura[0]),
         resolverParcial("2\u00B0 Apertura", tablaApertura[1]),
+        resolverParcial("3\u00B0 Apertura", tablaApertura[2]),
+        resolverParcial("4\u00B0 Apertura", tablaApertura[3]),
+        resolverParcial("5\u00B0 Apertura", tablaApertura[4]),
         resolverParcial("1\u00B0 Clausura", tablaClausura[0]),
         resolverParcial("2\u00B0 Clausura", tablaClausura[1]),
+        resolverParcial("3\u00B0 Clausura", tablaClausura[2]),
+        resolverParcial("4\u00B0 Clausura", tablaClausura[3]),
+        resolverParcial("5\u00B0 Clausura", tablaClausura[4]),
     ];
     const generalClasificados = [];
     for (const row of tablaGeneral) {
-        if (generalClasificados.length >= 4)
+        if (generalClasificados.length >= 6)
             break;
         if (usados.has(row.id))
             continue;
@@ -1449,20 +1459,27 @@ function calcularClasificadosLiguilla(tablaApertura, tablaClausura, tablaGeneral
         generalClasificados,
         repetidos: false,
         huboSustitutos,
-        completo: parciales.every((p) => p.id) && generalClasificados.length === 4,
+        completo: parciales.every((p) => p.id) && generalClasificados.length === 6,
     };
 }
-// Arma los 4 cruces de Cuartos de Final según la regla acordada:
-// 1° Clausura vs 4° General · 1° Apertura vs 3° General · 2° Clausura vs 2° General · 2° Apertura vs 1° General.
-function armarCruceCuartos(clasificados) {
-    const p = clasificados.parciales; // [0]1°Ap [1]2°Ap [2]1°Cl [3]2°Cl
-    const g = clasificados.generalClasificados; // [0]1°Gral ... [3]4°Gral
-    return [
-        { label: "Cuartos 1", equipoA: p[2].id, labelA: "1\u00B0 Clausura", equipoB: g[3], labelB: "4\u00B0 Gral" },
-        { label: "Cuartos 2", equipoA: p[0].id, labelA: "1\u00B0 Apertura", equipoB: g[2], labelB: "3\u00B0 Gral" },
-        { label: "Cuartos 3", equipoA: p[3].id, labelA: "2\u00B0 Clausura", equipoB: g[1], labelB: "2\u00B0 Gral" },
-        { label: "Cuartos 4", equipoA: p[1].id, labelA: "2\u00B0 Apertura", equipoB: g[0], labelB: "1\u00B0 Gral" },
+// Arma los 8 cruces de la Ronda de 16 según un seeding clásico (mejor sembrado vs. peor sembrado: 1-16,
+// 2-15, 3-14... 8-9), protegiendo a los mejores puestos de cruzarse entre sí en la primera ronda.
+// Orden de siembra: campeón y subcampeón de Apertura y Clausura alternados (los "elite" de los torneos
+// cortos), seguidos del resto de posiciones de Apertura/Clausura, y por último los 6 mejores de la general.
+function armarCruceDieciseisavos(clasificados) {
+    const p = clasificados.parciales; // [0..4] Apertura 1°-5° · [5..9] Clausura 1°-5°
+    const g = clasificados.generalClasificados; // [0..5] General 1°-6°
+    const siembra = [
+        p[0], p[5], p[1], p[6], p[2], p[7], p[3], p[8], p[4], p[9],
+        ...g.map((id, i) => ({ label: `${i + 1}\u00B0 Gral`, id })),
     ];
+    const cruces = [];
+    for (let i = 0; i < 8; i++) {
+        const a = siembra[i];
+        const b = siembra[15 - i];
+        cruces.push({ label: `Ronda de 16 \u2014 ${i + 1}`, equipoA: a.id, labelA: a.label, equipoB: b.id, labelB: b.label });
+    }
+    return cruces;
 }
 // Genera las dos jornadas (ida y vuelta) de una ronda de liguilla a partir de una lista de series {label, equipoA, equipoB}.
 function generarRondaLiguilla(series, nombreRonda, numeroBase) {
@@ -1545,27 +1562,41 @@ function turnoTandaPenales(tiros) {
     const tB = lista.filter((t) => t.equipo === "B").length;
     return tA === tB ? "A" : "B";
 }
-// A partir de las jornadas de liguilla ya jugadas, arma/avanza automáticamente semifinal y final cuando corresponde.
+// A partir de las jornadas de liguilla ya jugadas, arma/avanza automáticamente cuartos, semifinal y final
+// cuando corresponde. Numeración: Ronda de 16 = 1-2 · Cuartos = 3-4 · Semifinal = 5-6 · Final = 7-8.
 function avanzarLiguilla(jornadasLiguilla) {
     let jl = jornadasLiguilla;
     const porNumero = (n) => jl.find((j) => j.numero === n);
-    const cuartosIda = porNumero(1), cuartosVuelta = porNumero(2);
+    const dieciseisIda = porNumero(1), dieciseisVuelta = porNumero(2);
+    if (!dieciseisIda || !dieciseisVuelta)
+        return jl;
+    const ganadoresDieciseis = dieciseisIda.partidos.map((pIda, i) => ganadorSerie(pIda, dieciseisVuelta.partidos[i]));
+    if (ganadoresDieciseis.every(Boolean) && !porNumero(3)) {
+        const seriesCuartos = [
+            { label: "Cuartos 1", equipoA: ganadoresDieciseis[0], equipoB: ganadoresDieciseis[1] },
+            { label: "Cuartos 2", equipoA: ganadoresDieciseis[2], equipoB: ganadoresDieciseis[3] },
+            { label: "Cuartos 3", equipoA: ganadoresDieciseis[4], equipoB: ganadoresDieciseis[5] },
+            { label: "Cuartos 4", equipoA: ganadoresDieciseis[6], equipoB: ganadoresDieciseis[7] },
+        ];
+        jl = [...jl, ...generarRondaLiguilla(seriesCuartos, "Cuartos de Final", 3)];
+    }
+    const cuartosIda = porNumero(3), cuartosVuelta = porNumero(4);
     if (!cuartosIda || !cuartosVuelta)
         return jl;
     const ganadoresCuartos = cuartosIda.partidos.map((pIda, i) => ganadorSerie(pIda, cuartosVuelta.partidos[i]));
-    if (ganadoresCuartos.every(Boolean) && !porNumero(3)) {
+    if (ganadoresCuartos.every(Boolean) && !porNumero(5)) {
         const seriesSemis = [
             { label: "Semifinal 1", equipoA: ganadoresCuartos[0], equipoB: ganadoresCuartos[1] },
             { label: "Semifinal 2", equipoA: ganadoresCuartos[2], equipoB: ganadoresCuartos[3] },
         ];
-        jl = [...jl, ...generarRondaLiguilla(seriesSemis, "Semifinal", 3)];
+        jl = [...jl, ...generarRondaLiguilla(seriesSemis, "Semifinal", 5)];
     }
-    const semiIda = jl.find((j) => j.numero === 3), semiVuelta = jl.find((j) => j.numero === 4);
+    const semiIda = jl.find((j) => j.numero === 5), semiVuelta = jl.find((j) => j.numero === 6);
     if (semiIda && semiVuelta) {
         const ganadoresSemis = semiIda.partidos.map((pIda, i) => ganadorSerie(pIda, semiVuelta.partidos[i]));
-        if (ganadoresSemis.every(Boolean) && !jl.find((j) => j.numero === 5)) {
+        if (ganadoresSemis.every(Boolean) && !jl.find((j) => j.numero === 7)) {
             const serieFinal = [{ label: "Final", equipoA: ganadoresSemis[0], equipoB: ganadoresSemis[1] }];
-            jl = [...jl, ...generarRondaLiguilla(serieFinal, "Final", 5)];
+            jl = [...jl, ...generarRondaLiguilla(serieFinal, "Final", 7)];
         }
     }
     return jl;
@@ -2022,8 +2053,8 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
     // estadísticas (incluidos MVPs), el calendario y el presupuesto de los equipos.
     const comenzarNuevaTemporada = (teamEdits, playerEdits, nombreTemporada) => {
         const nombreEquipoDe = (p) => { const t = teams.find((x) => x.id === p.equipoId); return t ? t.nombre : "Agente libre"; };
-        const finalIda = fases.liguilla.find((j) => j.numero === 5);
-        const finalVuelta = fases.liguilla.find((j) => j.numero === 6);
+        const finalIda = fases.liguilla.find((j) => j.numero === 7);
+        const finalVuelta = fases.liguilla.find((j) => j.numero === 8);
         const campeonId = finalIda && finalVuelta ? ganadorSerie(finalIda.partidos[0], finalVuelta.partidos[0]) : null;
         const campeonTeam = campeonId ? teams.find((t) => t.id === campeonId) : null;
         const goleador = [...players].filter((p) => (p.goles || 0) > 0).sort((a, b) => (b.goles || 0) - (a.goles || 0))[0] || null;
@@ -2243,8 +2274,8 @@ function Dashboard({ teams, players, fases, tablaApertura, tablaClausura, tablaG
     const gaLider = [...players].filter((p) => (p.goles || 0) + (p.asistencias || 0) > 0).sort((a, b) => ((b.goles || 0) + (b.asistencias || 0)) - ((a.goles || 0) + (a.asistencias || 0)) || (b.goles || 0) - (a.goles || 0) || nombreEquipoDe(a).localeCompare(nombreEquipoDe(b)))[0];
     const conScore = [...players].filter((p) => p.scores && p.scores.length > 0);
     const mvpScore = conScore.sort((a, b) => avg(b.scores) - avg(a.scores) || nombreEquipoDe(a).localeCompare(nombreEquipoDe(b)))[0];
-    const finalIda = fases.liguilla.find((j) => j.numero === 5);
-    const finalVuelta = fases.liguilla.find((j) => j.numero === 6);
+    const finalIda = fases.liguilla.find((j) => j.numero === 7);
+    const finalVuelta = fases.liguilla.find((j) => j.numero === 8);
     const campeonId = finalIda && finalVuelta ? ganadorSerie(finalIda.partidos[0], finalVuelta.partidos[0]) : null;
     const campeon = campeonId ? teams.find((t) => t.id === campeonId) : null;
     const campeonTabla = campeonId ? tablaGeneral.find((t) => t.id === campeonId) : null;
@@ -3512,7 +3543,7 @@ function BracketLiguilla({ teams, rondas }) {
 function LiguillaView({ teams, players, tablaApertura, tablaClausura, tablaGeneral, fases, setFases, setTab, setFaseActiva }) {
     const [vista, setVista] = usePersistedState("liguillaVista", "bracket");
     const clasificados = calcularClasificadosLiguilla(tablaApertura, tablaClausura, tablaGeneral);
-    const cruces = clasificados.completo ? armarCruceCuartos(clasificados) : [];
+    const cruces = clasificados.completo ? armarCruceDieciseisavos(clasificados) : [];
     const yaGenerada = fases.liguilla.length > 0;
     const nombre = (id) => nombreEquipo(teams, id);
     const generar = () => {
@@ -3520,8 +3551,8 @@ function LiguillaView({ teams, players, tablaApertura, tablaClausura, tablaGener
             return;
         if (yaGenerada && !confirm("Ya hay una Liguilla generada. Esto la reemplaza por una nueva según la tabla actual. ¿Continuar?"))
             return;
-        const jornadasCuartos = generarRondaLiguilla(cruces.map((c) => ({ label: c.label, equipoA: c.equipoA, equipoB: c.equipoB })), "Cuartos de Final", 1);
-        setFases((f) => ({ ...f, liguilla: jornadasCuartos }));
+        const jornadasDieciseis = generarRondaLiguilla(cruces.map((c) => ({ label: c.label, equipoA: c.equipoA, equipoB: c.equipoB })), "Ronda de 16", 1);
+        setFases((f) => ({ ...f, liguilla: jornadasDieciseis }));
     };
     const actualizar = () => setFases((f) => ({ ...f, liguilla: avanzarLiguilla(f.liguilla) }));
     const setTandaPenales = (vueltaPartidoId, nuevaTanda) => {
@@ -3539,19 +3570,19 @@ function LiguillaView({ teams, players, tablaApertura, tablaClausura, tablaGener
         });
         return { nombreRonda, series };
     };
-    const rondas = [agruparRonda(1, 2, "Cuartos de Final"), agruparRonda(3, 4, "Semifinal"), agruparRonda(5, 6, "Final")].filter(Boolean);
+    const rondas = [agruparRonda(1, 2, "Ronda de 16"), agruparRonda(3, 4, "Cuartos de Final"), agruparRonda(5, 6, "Semifinal"), agruparRonda(7, 8, "Final")].filter(Boolean);
     const finalRonda = rondas.find((r) => r.nombreRonda === "Final");
     const campeon = finalRonda && finalRonda.series[0] && finalRonda.series[0].ganador;
     return React.createElement("div", { className: "space-y-3" },
         React.createElement("div", { className: "card2 p-4" },
             React.createElement("div", { className: "font-bold mb-2 text-[#8F9500]" }, "Clasificados a la Liguilla"),
-            !clasificados.completo && React.createElement("div", { className: "text-xs text-zinc-500" }, "Todav\u00EDa faltan resultados en Apertura o Clausura para definir los 8 clasificados."),
+            !clasificados.completo && React.createElement("div", { className: "text-xs text-zinc-500" }, "Todav\u00EDa faltan resultados en Apertura o Clausura para definir los 16 clasificados."),
             clasificados.huboSustitutos && React.createElement("div", { className: "text-xs text-amber-600 mb-2" }, "\u2139\uFE0F Hab\u00EDa un equipo repetido entre los clasificados directos de Apertura/Clausura \u2014 el cupo pas\u00F3 autom\u00E1ticamente al siguiente en la tabla general (marcado con \u2b50)."),
             clasificados.completo && React.createElement("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs" }, [...clasificados.parciales.map((p) => ({ label: p.label, id: p.id, sustituto: p.sustituto })), ...clasificados.generalClasificados.map((id, i) => ({ label: `${i + 1}\u00B0 Gral`, id, sustituto: false }))].map((c, i) => React.createElement("div", { key: i, className: "bg-zinc-50 rounded-lg p-2" },
                 React.createElement("div", { className: "text-[10px] text-zinc-400 font-bold" }, c.label + (c.sustituto ? " \u2b50" : "")),
                 React.createElement("div", { className: "font-semibold" }, nombre(c.id))))),
             React.createElement("div", { className: "flex gap-2 mt-3" },
-                React.createElement("button", { type: "button", disabled: !clasificados.completo, onClick: generar, className: "btn-olive text-xs px-3 py-2 rounded-lg font-semibold disabled:opacity-40" }, yaGenerada ? "\uD83D\uDD01 Regenerar cuartos" : "\uD83C\uDFC6 Generar Liguilla"),
+                React.createElement("button", { type: "button", disabled: !clasificados.completo, onClick: generar, className: "btn-olive text-xs px-3 py-2 rounded-lg font-semibold disabled:opacity-40" }, yaGenerada ? "\uD83D\uDD01 Regenerar Ronda de 16" : "\uD83C\uDFC6 Generar Liguilla"),
                 yaGenerada && React.createElement("button", { type: "button", onClick: actualizar, className: "text-xs px-3 py-2 rounded-lg font-semibold bg-zinc-100 hover:bg-zinc-200" }, "\u21BB Actualizar / avanzar ronda"),
                 yaGenerada && React.createElement("button", { type: "button", onClick: () => { setFaseActiva("liguilla"); setTab("calendario"); }, className: "text-xs px-3 py-2 rounded-lg font-semibold bg-zinc-100 hover:bg-zinc-200" }, "\uD83D\uDCC5 Ir al calendario de la Liguilla"))),
         campeon && React.createElement("div", { className: "card2 p-4 text-center", style: { background: "#F4F7DE" } },
