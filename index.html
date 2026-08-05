@@ -798,19 +798,128 @@ function descargarCsv(nombreArchivo, filas) {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 }
-// Exporta el plantel de UN equipo (Nombre, Posición, Valoración, Valor de mercado) a un .csv propio,
-// para poder mandar cada plantel por separado. Usado tanto desde la lista de Equipos como desde su detalle.
+// Exporta UN equipo completo (datos del club + plantilla entera con todas sus estadísticas) a su propio
+// .csv, para poder mandar o guardar cada equipo por separado. Una fila por jugador; los datos del club se
+// repiten en cada fila porque el CSV es una sola tabla plana. Si el equipo no tiene jugadores todavía,
+// exporta igual una fila con los datos del club y los campos de jugador vacíos.
+const CAMPOS_EQUIPO_CSV = ["Equipo", "Escudo", "Presupuesto", "PresupuestoBase"];
+const CAMPOS_JUGADOR_CSV = ["NombreJugador", "NombreDorsal", "Dorsal", "Valoracion", "Posicion", "Foto", "Goles", "Asistencias", "PartidosJugados", "MinutosJugados", "Scores", "Amarillas", "Rojas", "SancionJornadas", "MVPs", "ValorMercado", "GolesRecibidos", "JornadasLesionado", "EstadoTransferencia"];
+function filaJugadorCsv(p) {
+    return [
+        p.nombre, p.nombreDorsal || "", p.dorsal, p.valoracion, p.posicion, p.foto || "",
+        p.goles || 0, p.asistencias || 0, p.partidosJugados || 0, p.minutosJugados || 0,
+        (p.scores || []).join(";"), p.amarillas || 0, p.rojas || 0, p.sancionJornadas || 0,
+        p.mvps || 0, p.valorMercado || 0, p.golesRecibidos || 0, p.jornadasLesionado || 0,
+        p.estadoTransferencia || "normal",
+    ];
+}
 function exportarPlantelCsv(team, squad) {
-    if (!squad.length) {
-        alert(`"${team.nombre}" todav\u00EDa no tiene jugadores para exportar.`);
-        return;
-    }
+    const filaEquipo = [team.nombre, team.escudo || "", team.presupuesto, team.presupuestoBase];
     const filas = [
-        ["Nombre", "Posici\u00F3n", "Valoraci\u00F3n", "Valor de mercado"],
-        ...squad.map((p) => [p.nombre, p.posicion, p.valoracion, p.valorMercado || 0]),
+        [...CAMPOS_EQUIPO_CSV, ...CAMPOS_JUGADOR_CSV],
+        ...(squad.length ? squad.map((p) => [...filaEquipo, ...filaJugadorCsv(p)]) : [[...filaEquipo, ...CAMPOS_JUGADOR_CSV.map(() => "")]]),
     ];
     const slug = (team.nombre || "equipo").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    descargarCsv(`plantel-${slug || "equipo"}.csv`, filas);
+    descargarCsv(`equipo-${slug || "equipo"}.csv`, filas);
+}
+// Plantilla en blanco para armar un equipo a mano fuera de la app: header + una fila de ejemplo con los
+// valores que espera cada columna (posición válida, dorsal, etc.) y otra fila mostrando un comodín (se
+// identifican solo por el dorsal, 31 o 32; la Valoracion que tengan en el CSV no importa, la app la
+// reemplaza igual por el GRL fijo de comodín), lista para duplicar por cada jugador y después importar
+// con "Importar equipo desde CSV".
+function descargarPlantillaEquipoCsv() {
+    const filaEjemplo = [
+        "Nombre del Equipo", "", PRESUPUESTO_BASE, PRESUPUESTO_BASE,
+        "Nombre del Jugador", "", 1, 82, "MC", "",
+        0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, "normal",
+    ];
+    const filaComodin = [
+        "Nombre del Equipo", "", PRESUPUESTO_BASE, PRESUPUESTO_BASE,
+        `Comod\u00edn #${DORSALES_COMODIN[0]}`, "", DORSALES_COMODIN[0], GRL_COMODIN, "MC", "",
+        0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, "normal",
+    ];
+    const filas = [[...CAMPOS_EQUIPO_CSV, ...CAMPOS_JUGADOR_CSV], filaEjemplo, filaComodin];
+    descargarCsv("plantilla-equipo-en-blanco.csv", filas);
+}
+// Parser de CSV genérico: soporta campos entre comillas con comas, comillas escapadas ("") y saltos de
+// línea adentro (relevante acá porque Escudo/Foto son imágenes en base64, aunque en la práctica esas no
+// llevan comillas ni comas). Devuelve un array de filas, cada fila un array de strings.
+function parseCsv(texto) {
+    const filas = [];
+    let fila = [], campo = "", enComillas = false;
+    const s = texto.replace(/^\uFEFF/, "");
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (enComillas) {
+            if (c === '"') {
+                if (s[i + 1] === '"') { campo += '"'; i++; }
+                else
+                    enComillas = false;
+            }
+            else
+                campo += c;
+        }
+        else if (c === '"')
+            enComillas = true;
+        else if (c === ",") { fila.push(campo); campo = ""; }
+        else if (c === "\r")
+            continue;
+        else if (c === "\n") { fila.push(campo); filas.push(fila); fila = []; campo = ""; }
+        else
+            campo += c;
+    }
+    if (campo !== "" || fila.length) { fila.push(campo); filas.push(fila); }
+    return filas.filter((f) => f.some((c) => c !== ""));
+}
+// Reconstruye {team, players} a partir del texto de un .csv exportado con exportarPlantelCsv. Genera IDs
+// nuevos (para no chocar con nada existente) y no requiere que las columnas vengan en un orden exacto,
+// siempre que tengan el mismo nombre de encabezado.
+function importarEquipoDesdeCsv(texto) {
+    const filas = parseCsv(texto);
+    if (filas.length < 2)
+        throw new Error("El archivo está vacío o no tiene el formato esperado.");
+    const encabezado = filas[0];
+    const idx = (campo) => encabezado.indexOf(campo);
+    const iEquipo = idx("Equipo");
+    if (iEquipo === -1)
+        throw new Error('No se encontró la columna "Equipo" — ¿es un CSV exportado desde acá?');
+    const get = (fila, campo, porDefecto) => { const i = idx(campo); return i === -1 || fila[i] === undefined || fila[i] === "" ? porDefecto : fila[i]; };
+    const primera = filas[1];
+    const teamId = uid("eq");
+    const team = {
+        id: teamId,
+        nombre: get(primera, "Equipo", "Equipo importado"),
+        escudo: get(primera, "Escudo", ""),
+        presupuesto: Number(get(primera, "Presupuesto", PRESUPUESTO_BASE)),
+        presupuestoBase: Number(get(primera, "PresupuestoBase", PRESUPUESTO_BASE)),
+        historialCaja: [], wishlist: [],
+    };
+    const players = filas.slice(1)
+        .filter((fila) => get(fila, "NombreJugador", "").trim())
+        .map((fila) => ({
+        id: uid("jg"),
+        nombre: get(fila, "NombreJugador", "Jugador"),
+        nombreDorsal: get(fila, "NombreDorsal", ""),
+        dorsal: Number(get(fila, "Dorsal", 1)) || 1,
+        valoracion: Number(get(fila, "Valoracion", 82)) || 82,
+        posicion: get(fila, "Posicion", "MC"),
+        foto: get(fila, "Foto", ""),
+        equipoId: teamId,
+        goles: Number(get(fila, "Goles", 0)) || 0,
+        asistencias: Number(get(fila, "Asistencias", 0)) || 0,
+        partidosJugados: Number(get(fila, "PartidosJugados", 0)) || 0,
+        minutosJugados: Number(get(fila, "MinutosJugados", 0)) || 0,
+        scores: (get(fila, "Scores", "") || "").split(";").map((n) => Number(n)).filter((n) => n !== undefined && n !== null && !isNaN(n)),
+        amarillas: Number(get(fila, "Amarillas", 0)) || 0,
+        rojas: Number(get(fila, "Rojas", 0)) || 0,
+        sancionJornadas: Number(get(fila, "SancionJornadas", 0)) || 0,
+        mvps: Number(get(fila, "MVPs", 0)) || 0,
+        valorMercado: Number(get(fila, "ValorMercado", 0)) || 0,
+        golesRecibidos: Number(get(fila, "GolesRecibidos", 0)) || 0,
+        jornadasLesionado: Number(get(fila, "JornadasLesionado", 0)) || 0,
+        estadoTransferencia: get(fila, "EstadoTransferencia", "normal"),
+    }));
+    return { team, players };
 }
 const avg = (arr) => (arr && arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
 const uid = (prefix) => (prefix ? prefix + "_" : "") + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -2142,7 +2251,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
             React.createElement("main", { className: "p-3 md:p-6 max-w-6xl mx-auto w-full" },
                 ["calendario", "partido", "xiideal"].includes(tab) && React.createElement(FaseSwitcher, { faseActiva: faseActiva, setFaseActiva: setFaseActiva, liguillaDisponible: fases.liguilla.length > 0 }),
                 tab === "dashboard" && React.createElement(Dashboard, { teams: teams, players: players, fases: fases, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, setTab: goTab, diasDesdeBackup: diasDesdeBackup }),
-                tab === "equipos" && !selectedTeamId && React.createElement(EquiposLista, { teams: teams, setTeams: setTeams, players: players, onOpen: setSelectedTeamId }),
+                tab === "equipos" && !selectedTeamId && React.createElement(EquiposLista, { teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, onOpen: setSelectedTeamId }),
                 tab === "equipos" && selectedTeamId && React.createElement(EquipoDetalle, { teamId: selectedTeamId, teams: teams, setTeams: setTeams, players: players, setPlayers: setPlayers, onBack: () => setSelectedTeamId(null), todasLasJornadas: todasLasJornadas }),
                 tab === "tabla" && React.createElement(TablaTabs, { teams: teams, players: players, tablaApertura: tablaApertura, tablaClausura: tablaClausura, tablaGeneral: tablaGeneral, tablaAperturaAnterior: tablaAperturaAnterior, tablaClausuraAnterior: tablaClausuraAnterior, tablaGeneralAnterior: tablaGeneralAnterior, fases: fases, setFases: setFases, setTab: goTab, setFaseActiva: setFaseActiva }),
                 tab === "calendario" && React.createElement(Calendario, { key: faseActiva, teams: teams, jornadas: jornadasFase, setJornadas: setJornadasFase, setTab: goTab, players: players, setPlayers: setPlayers, setTeams: setTeams, faseActiva: faseActiva }),
@@ -2524,8 +2633,9 @@ function SalonDeLaFama({ temporadas }) {
         ordenadas.map((t) => React.createElement(TemporadaCard, { key: t.id, t: t, abierta: abierta === t.id, onToggle: () => setAbierta(abierta === t.id ? null : t.id) })));
 }
 // ---------- Equipos: lista ----------
-function EquiposLista({ teams, setTeams, players, onOpen }) {
+function EquiposLista({ teams, setTeams, players, setPlayers, onOpen }) {
     const [nombre, setNombre] = useState("");
+    const fileRef = useRef(null);
     const addTeam = () => {
         if (teams.length >= MAX_EQUIPOS)
             return;
@@ -2541,6 +2651,38 @@ function EquiposLista({ teams, setTeams, players, onOpen }) {
         [next[index], next[target]] = [next[target], next[index]];
         setTeams(next);
     };
+    const importarClick = () => fileRef.current && fileRef.current.click();
+    const importarCsv = (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (!f)
+            return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            try {
+                const { team, players: nuevosJugadores } = importarEquipoDesdeCsv(String(ev.target.result));
+                if (teams.length >= MAX_EQUIPOS) {
+                    alert(`Ya hay ${MAX_EQUIPOS} equipos, el máximo permitido. Borra o fusiona alguno antes de importar otro.`);
+                    return;
+                }
+                if (nuevosJugadores.length > MAX_JUGADORES) {
+                    alert(`Ese CSV trae ${nuevosJugadores.length} jugadores; el máximo por plantilla es ${MAX_JUGADORES}. Se importan los primeros ${MAX_JUGADORES}.`);
+                }
+                const jugadoresFinales = nuevosJugadores.slice(0, MAX_JUGADORES);
+                if (teams.some((t) => t.nombre.trim().toLowerCase() === team.nombre.trim().toLowerCase()) && !confirm(`Ya existe un equipo llamado "${team.nombre}". ¿Importar igual como un equipo nuevo y separado?`))
+                    return;
+                setTeams([...teams, team]);
+                setPlayers([...players, ...jugadoresFinales]);
+                alert(`"${team.nombre}" importado con ${jugadoresFinales.length} jugador${jugadoresFinales.length === 1 ? "" : "es"}.`);
+            }
+            catch (err) {
+                alert(`No se pudo importar el CSV: ${err.message || err}`);
+            }
+            finally {
+                e.target.value = "";
+            }
+        };
+        reader.readAsText(f, "UTF-8");
+    };
     return (React.createElement("div", { className: "space-y-3" },
         React.createElement("div", { className: "flex items-center justify-between" },
             React.createElement("h2", { className: "text-lg font-black" }, "Equipos"),
@@ -2552,6 +2694,10 @@ function EquiposLista({ teams, setTeams, players, onOpen }) {
         React.createElement("div", { className: "flex gap-2" },
             React.createElement("input", { className: "flex-1", placeholder: "Nombre del equipo", value: nombre, onChange: (e) => setNombre(e.target.value), onKeyDown: (e) => e.key === "Enter" && addTeam() }),
             React.createElement("button", { onClick: addTeam, disabled: teams.length >= MAX_EQUIPOS, className: "btn-olive rounded-full px-5 font-semibold disabled:opacity-40" }, "A\u00F1adir")),
+        React.createElement("div", { className: "flex flex-wrap gap-2" },
+            React.createElement("input", { ref: fileRef, type: "file", accept: ".csv,text/csv", onChange: importarCsv, style: { display: "none" } }),
+            React.createElement("button", { type: "button", onClick: importarClick, disabled: teams.length >= MAX_EQUIPOS, className: "text-xs px-3 py-1.5 rounded-full font-semibold bg-zinc-100 hover:bg-zinc-200 disabled:opacity-40" }, "\u2B06\uFE0F Importar equipo desde CSV"),
+            React.createElement("button", { type: "button", onClick: descargarPlantillaEquipoCsv, className: "text-xs px-3 py-1.5 rounded-full font-semibold bg-zinc-100 hover:bg-zinc-200" }, "\uD83D\uDCC4 Plantilla en blanco")),
         teams.length > 1 && React.createElement("div", { className: "text-xs text-zinc-500 px-1" }, "Usa \u2191/\u2193 para poner los equipos en el mismo orden que tienen en el juego. Ese orden se usa como criterio final de desempate cuando dos equipos quedan totalmente empatados en la tabla."),
         React.createElement("div", { className: "card2" },
             teams.map((t, i) => {
@@ -2576,7 +2722,7 @@ function EquiposLista({ teams, setTeams, players, onOpen }) {
                                     " \u00B7 \u2B50 ",
                                     avgValoracion(squadEq).toFixed(1)))),
                         React.createElement(Icon, { size: 16, className: "text-[#B4BC00]" }, "\uD83D\uDC65")),
-                    React.createElement("button", { type: "button", onClick: (e) => { e.stopPropagation(); exportarPlantelCsv(t, squadEq); }, title: "Exportar plantel a CSV", className: "text-zinc-400 hover:text-[#8F9500] p-1.5 shrink-0" },
+                    React.createElement("button", { type: "button", onClick: (e) => { e.stopPropagation(); exportarPlantelCsv(t, squadEq); }, title: "Exportar equipo a CSV", className: "text-zinc-400 hover:text-[#8F9500] p-1.5 shrink-0" },
                         React.createElement(Icon, { size: 15 }, "\u2B07\uFE0F"))));
             }),
             !teams.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, "A\u00FAn no hay equipos. A\u00F1ade el primero arriba."))));
