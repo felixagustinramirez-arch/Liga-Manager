@@ -1,4 +1,4 @@
-# Liga KONAMI — PWA para iPhone
+# Global Super-League — PWA para iPhone
 
 ## Qué se agregó
 - `manifest.json`: nombre, icono y modo "standalone" (sin barra de Safari).
@@ -27,7 +27,7 @@
 Cada vez que subas cambios nuevos a `index.html`, sube también el número de versión en `service-worker.js`:
 
 ```js
-const CACHE_VERSION = 'liga-konami-v2'; // súbelo aquí
+const CACHE_VERSION = 'gsl-v2'; // súbelo aquí
 ```
 
 Si no lo cambias, los usuarios que ya instalaron la app pueden seguir viendo la versión vieja en caché durante un tiempo.

@@ -1,13 +1,13 @@
 {
-  "name": "Liga KONAMI",
-  "short_name": "Liga KONAMI",
-  "description": "App de gestión de torneo Liga KONAMI",
+  "name": "Global Super-League",
+  "short_name": "GSL",
+  "description": "App de gestión de torneo Global Super-League",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "background_color": "#000000",
-  "theme_color": "#000000",
+  "background_color": "#0A1931",
+  "theme_color": "#0A1931",
   "icons": [
     {
       "src": "icons/icon-192.png",
