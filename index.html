@@ -577,6 +577,22 @@
 const { useState, useEffect, useMemo, useRef } = React;
 // ---------- Constantes ----------
 const POSICIONES = ["PT", "DEC", "LI", "LD", "MCD", "MC", "MP", "ID", "II", "EI", "ED", "SP", "DC"];
+// ---------- Selecciones Nacionales ----------
+// Listado de federaciones nacionales (las disponibles en PES/eFootball), agrupadas por confederación.
+// Se usa tanto para el selector de "Nacionalidad" del jugador como para armar las convocatorias.
+const CONFEDERACIONES = {
+    CONMEBOL: ["Argentina", "Bolivia", "Brasil", "Chile", "Colombia", "Ecuador", "Paraguay", "Per\u00FA", "Uruguay", "Venezuela"],
+    UEFA: ["Albania", "Alemania", "Andorra", "Armenia", "Austria", "Azerbaiy\u00E1n", "B\u00E9lgica", "Bielorrusia", "Bosnia y Herzegovina", "Bulgaria", "Chipre", "Croacia", "Dinamarca", "Escocia", "Eslovaquia", "Eslovenia", "Espa\u00F1a", "Estonia", "Feroe", "Finlandia", "Francia", "Gales", "Georgia", "Gibraltar", "Grecia", "Hungr\u00EDa", "Inglaterra", "Irlanda", "Irlanda del Norte", "Islandia", "Israel", "Italia", "Kazajist\u00E1n", "Kosovo", "Letonia", "Liechtenstein", "Lituania", "Luxemburgo", "Macedonia del Norte", "Malta", "Moldavia", "Montenegro", "Noruega", "Pa\u00EDses Bajos", "Polonia", "Portugal", "Rep\u00FAblica Checa", "Ruman\u00EDa", "Rusia", "San Marino", "Serbia", "Suecia", "Suiza", "Turqu\u00EDa", "Ucrania"],
+    AFC: ["Afganist\u00E1n", "Arabia Saudita", "Australia", "Bahr\u00E9in", "Banglad\u00E9s", "But\u00E1n", "Brun\u00E9i", "Camboya", "Catar", "China", "Corea del Norte", "Corea del Sur", "Emiratos \u00C1rabes Unidos", "Filipinas", "Guam", "Hong Kong", "India", "Indonesia", "Irak", "Ir\u00E1n", "Jap\u00F3n", "Jordania", "Kirguist\u00E1n", "Kuwait", "Laos", "L\u00EDbano", "Macao", "Malasia", "Maldivas", "Mongolia", "Myanmar", "Nepal", "Om\u00E1n", "Pakist\u00E1n", "Palestina", "Singapur", "Siria", "Sri Lanka", "Tayikist\u00E1n", "Tailandia", "Timor Oriental", "Turkmenist\u00E1n", "Uzbekist\u00E1n", "Vietnam", "Yemen"],
+    CAF: ["Angola", "Argelia", "Ben\u00EDn", "Botsuana", "Burkina Faso", "Burundi", "Cabo Verde", "Camer\u00FAn", "Chad", "Comoras", "Congo", "Rep\u00FAblica Democr\u00E1tica del Congo", "Costa de Marfil", "Egipto", "Eritrea", "Esuatini", "Etiop\u00EDa", "Gab\u00F3n", "Gambia", "Ghana", "Guinea", "Guinea-Bis\u00E1u", "Guinea Ecuatorial", "Kenia", "Lesoto", "Liberia", "Libia", "Madagascar", "Malaui", "Mal\u00ED", "Marruecos", "Mauricio", "Mauritania", "Mozambique", "Namibia", "N\u00EDger", "Nigeria", "Rep\u00FAblica Centroafricana", "Ruanda", "Santo Tom\u00E9 y Pr\u00EDncipe", "Senegal", "Seychelles", "Sierra Leona", "Somalia", "Sud\u00E1frica", "Sud\u00E1n", "Sud\u00E1n del Sur", "Tanzania", "Togo", "T\u00FAnez", "Uganda", "Yibuti", "Zambia", "Zimbabue"],
+    CONCACAF: ["Anguila", "Antigua y Barbuda", "Aruba", "Bahamas", "Barbados", "Belice", "Bermudas", "Canad\u00E1", "Costa Rica", "Cuba", "Curazao", "Dominica", "El Salvador", "Estados Unidos", "Granada", "Guatemala", "Guyana", "Hait\u00ED", "Honduras", "Islas Caim\u00E1n", "Islas Turcas y Caicos", "Islas V\u00EDrgenes Brit\u00E1nicas", "Islas V\u00EDrgenes de EE. UU.", "Jamaica", "M\u00E9xico", "Montserrat", "Nicaragua", "Panam\u00E1", "Puerto Rico", "Rep\u00FAblica Dominicana", "San Crist\u00F3bal y Nieves", "San Vicente y las Granadinas", "Santa Luc\u00EDa", "Surinam", "Trinidad y Tobago"],
+    OFC: ["Nueva Zelanda", "Fiyi", "Pap\u00FAa Nueva Guinea", "Vanuatu", "Islas Salom\u00F3n", "Nueva Caledonia", "Tahit\u00ED", "Samoa", "Samoa Americana", "Tonga", "Islas Cook"],
+};
+const NACIONALIDADES = Object.values(CONFEDERACIONES).flat().sort((a, b) => a.localeCompare(b, "es"));
+// Requisitos m\u00EDnimos para que una selecci\u00F3n pueda convocar: al menos 23 jugadores disponibles (de
+// cualquier equipo o agentes libres) con esa nacionalidad, y al menos 1 de ellos arquero (PT).
+const CONVOCATORIA_MIN_JUGADORES = 23;
+const CONVOCATORIA_MIN_ARQUEROS = 1;
 const MAX_EQUIPOS = 30;
 const MAX_JUGADORES = 32;
 const JORNADAS_TOTAL = 29;
@@ -803,10 +819,10 @@ function descargarCsv(nombreArchivo, filas) {
 // repiten en cada fila porque el CSV es una sola tabla plana. Si el equipo no tiene jugadores todavía,
 // exporta igual una fila con los datos del club y los campos de jugador vacíos.
 const CAMPOS_EQUIPO_CSV = ["Equipo", "Escudo", "Presupuesto", "PresupuestoBase"];
-const CAMPOS_JUGADOR_CSV = ["NombreJugador", "NombreDorsal", "Dorsal", "Valoracion", "Posicion", "Foto", "Goles", "Asistencias", "PartidosJugados", "MinutosJugados", "Scores", "Amarillas", "Rojas", "SancionJornadas", "MVPs", "ValorMercado", "GolesRecibidos", "JornadasLesionado", "EstadoTransferencia"];
+const CAMPOS_JUGADOR_CSV = ["NombreJugador", "NombreDorsal", "Dorsal", "Valoracion", "Posicion", "Nacionalidad", "Foto", "Goles", "Asistencias", "PartidosJugados", "MinutosJugados", "Scores", "Amarillas", "Rojas", "SancionJornadas", "MVPs", "ValorMercado", "GolesRecibidos", "JornadasLesionado", "EstadoTransferencia"];
 function filaJugadorCsv(p) {
     return [
-        p.nombre, p.nombreDorsal || "", p.dorsal, p.valoracion, p.posicion, p.foto || "",
+        p.nombre, p.nombreDorsal || "", p.dorsal, p.valoracion, p.posicion, p.nacionalidad || "", p.foto || "",
         p.goles || 0, p.asistencias || 0, p.partidosJugados || 0, p.minutosJugados || 0,
         (p.scores || []).join(";"), p.amarillas || 0, p.rojas || 0, p.sancionJornadas || 0,
         p.mvps || 0, p.valorMercado || 0, p.golesRecibidos || 0, p.jornadasLesionado || 0,
@@ -898,6 +914,7 @@ function importarEquipoDesdeCsv(texto) {
         dorsal: Number(get(fila, "Dorsal", 1)) || 1,
         valoracion: Number(get(fila, "Valoracion", 82)) || 82,
         posicion: get(fila, "Posicion", "MC"),
+        nacionalidad: get(fila, "Nacionalidad", ""),
         foto: get(fila, "Foto", ""),
         equipoId: teamId,
         goles: Number(get(fila, "Goles", 0)) || 0,
@@ -933,7 +950,7 @@ function nuevoEquipo(nombre) {
 function nuevoJugador(equipoId, dorsal) {
     return {
         id: uid("jg"), nombre: "Nuevo Jugador", nombreDorsal: "", dorsal: dorsal || 1, valoracion: 82, posicion: "MC",
-        foto: "", equipoId: equipoId || null,
+        foto: "", equipoId: equipoId || null, nacionalidad: "",
         goles: 0, asistencias: 0, partidosJugados: 0, minutosJugados: 0,
         scores: [], amarillas: 0, rojas: 0, sancionJornadas: 0, mvps: 0,
         valorMercado: 0, golesRecibidos: 0, jornadasLesionado: 0,
@@ -1932,6 +1949,9 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
     // XI Ideal "del Torneo": uno completamente independiente por período (Torneo completo / Apertura / Clausura / Liguilla).
     // Es manual (igual que el XI de la Jornada) y cada período guarda su propia selección, sin heredar ni mezclarse con los demás.
     const [xiTorneo, setXiTorneo] = useState({ torneo: null, apertura: null, clausura: null, liguilla: null });
+    // Selecciones Nacionales: convocatoria armada por cada selección (hasta 23 jugadores elegidos entre
+    // los disponibles de esa nacionalidad), guardada por nombre de selección -> array de IDs de jugador.
+    const [convocatorias, setConvocatorias] = useState({});
     const [tab, setTab] = usePersistedState("tab", "dashboard");
     const [selectedTeamId, setSelectedTeamId] = useState(null);
     const [loaded, setLoaded] = useState(false);
@@ -1948,10 +1968,11 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
     const draftSaveTimer = useRef(null);
     const aplicarDatos = (d) => {
         setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
-        setPlayers((d.players || []).map((p) => ({ ...p, scores: p.scores || [] })));
+        setPlayers((d.players || []).map((p) => ({ ...p, scores: p.scores || [], nacionalidad: p.nacionalidad || "" })));
         setTransfers(d.transfers || []);
         setAvisos(d.avisos || []);
         setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
+        setConvocatorias(d.convocatorias || {});
         setTemporadas(d.temporadas || []);
         if (d.fases) {
             setFases({
@@ -2037,13 +2058,13 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
         if (saveTimer.current)
             clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(() => {
-            const payload = { teams, players, fases, transfers, avisos, xiTorneo, temporadas };
+            const payload = { teams, players, fases, transfers, avisos, xiTorneo, temporadas, convocatorias };
             saveData(payload);
             if (authUid)
                 pushCloudData(authUid, payload);
         }, 400);
         return () => clearTimeout(saveTimer.current);
-    }, [teams, players, fases, transfers, avisos, xiTorneo, temporadas, loaded, authUid]);
+    }, [teams, players, fases, transfers, avisos, xiTorneo, temporadas, convocatorias, loaded, authUid]);
     useEffect(() => {
         if (!loaded)
             return;
@@ -2087,6 +2108,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
         { id: "jugadores", label: "Jugadores", icon: "🔍" },
         { id: "sanciones", label: "Sanciones", icon: "🛡️" },
         { id: "equipos", label: "Equipos", icon: "👕" },
+        { id: "selecciones", label: "Selecciones Nacionales", icon: "🌍" },
         { id: "extras", label: "Extras", icon: "🧰" },
     ];
     if (!loaded)
@@ -2094,7 +2116,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
     const goTab = (id) => { setTab(id); if (id !== "equipos")
         setSelectedTeamId(null); setMobileNavOpen(false); };
     const exportarDatos = () => {
-        const blob = new Blob([JSON.stringify({ teams, players, fases, transfers, xiTorneo, temporadas }, null, 2)], { type: "application/json" });
+        const blob = new Blob([JSON.stringify({ teams, players, fases, transfers, xiTorneo, temporadas, convocatorias }, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -2116,7 +2138,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
                 if (!confirm("Esto reemplazará todos los datos actuales por los de la copia. ¿Continuar?"))
                     return;
                 setTeams((d.teams || []).map((t) => ({ ...t, historialCaja: t.historialCaja || [] })));
-                setPlayers((d.players || []).map((p) => ({ ...p, scores: p.scores || [] })));
+                setPlayers((d.players || []).map((p) => ({ ...p, scores: p.scores || [], nacionalidad: p.nacionalidad || "" })));
                 if (d.fases) {
                     setFases({
                         apertura: d.fases.apertura && d.fases.apertura.length ? d.fases.apertura : generarJornadas(),
@@ -2129,6 +2151,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
                 }
                 setTransfers(d.transfers || []);
                 setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
+                setConvocatorias(d.convocatorias || {});
                 setTemporadas(d.temporadas || []);
                 alert("Copia importada correctamente.");
             }
@@ -2224,6 +2247,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
         setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
         setTransfers([]);
         setXiTorneo({ torneo: null, apertura: null, clausura: null, liguilla: null });
+        setConvocatorias({});
         setTemporadas([]);
         setDraftPartido(draftPartidoVacio());
         try {
@@ -2259,6 +2283,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
                 tab === "rankings" && React.createElement(Rankings, { players: players, teams: teams, jornadas: todasLasJornadas }),
                 tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
                 tab === "sanciones" && React.createElement(Sanciones, { players: players, setPlayers: setPlayers, teams: teams }),
+                tab === "selecciones" && React.createElement(SeleccionesNacionales, { players: players, teams: teams, convocatorias: convocatorias, setConvocatorias: setConvocatorias }),
                 tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo, onNuevaTemporada: () => setMostrarNuevaTemporada(true), diasDesdeBackup: diasDesdeBackup, authUid: authUid, syncEstado: syncEstado, firebaseDisponible: firebaseDisponible, onIrALogin: onIrALogin }),
                 mostrarNuevaTemporada && React.createElement(NuevaTemporadaModal, { teams: teams, players: players, proximoNumero: temporadas.length + 1, onClose: () => setMostrarNuevaTemporada(false), onConfirm: comenzarNuevaTemporada }),
                 tab === "salonfama" && React.createElement(SalonDeLaFama, { temporadas: temporadas })))));
@@ -2997,6 +3022,10 @@ function PlayerSheet({ player: p, onClose, onChange, onRemove, jornadas, teams }
                     React.createElement(NumberField, { disabled: comodin, value: p.dorsal, min: 1, max: 99, onCommit: (n) => onChange({ dorsal: n }) })),
                 React.createElement(Field, { label: "Posici\u00F3n" },
                     React.createElement("select", { value: p.posicion, onChange: (e) => onChange({ posicion: e.target.value }) }, POSICIONES.map((pos) => React.createElement("option", { key: pos, value: pos }, pos)))),
+                React.createElement(Field, { label: "Nacionalidad" },
+                    React.createElement("select", { value: p.nacionalidad || "", onChange: (e) => onChange({ nacionalidad: e.target.value }) },
+                        React.createElement("option", { value: "" }, "\u2014 Sin definir \u2014"),
+                        NACIONALIDADES.map((n) => React.createElement("option", { key: n, value: n }, n)))),
                 React.createElement(Field, { label: "Valoraci\u00F3n (GRL 60-99)" },
                     React.createElement(NumberField, { min: 60, max: 99, disabled: comodin, value: comodin ? GRL_COMODIN : p.valoracion, onCommit: (n) => onChange({ valoracion: n }) })),
                 React.createElement(Field, { label: "Score promedio" },
@@ -3156,6 +3185,114 @@ function ComparadorJugadoresModal({ players, teams, onClose }) {
                                 React.createElement("td", { className: "text-center py-2 font-semibold", style: ganador === "A" ? { color: "#0A1931" } : undefined }, vA),
                                 React.createElement("td", { className: "text-center py-2 font-semibold", style: ganador === "B" ? { color: "#0A1931" } : undefined }, vB));
                         })))) : React.createElement("div", { className: "text-center text-zinc-500 text-sm py-10" }, "Selecciona dos jugadores de cualquier equipo para compararlos.")));
+}
+// ---------- Selecciones Nacionales ----------
+// Para cada selección (federación FIFA) se cuentan los jugadores disponibles —de cualquier equipo del
+// torneo, más los agentes libres— que tengan esa nacionalidad. Una selección es "elegible" para convocar
+// cuando tiene al menos CONVOCATORIA_MIN_JUGADORES disponibles y al menos CONVOCATORIA_MIN_ARQUEROS de
+// ellos son porteros (PT). La convocatoria en sí (hasta 23 elegidos) se arma aparte, a mano, y se guarda
+// por nombre de selección en el estado `convocatorias`.
+function nombreEquipoDeJugador(teams, p) {
+    if (!p.equipoId)
+        return "\uD83C\uDD93 Agente Libre";
+    const t = teams.find((t) => t.id === p.equipoId);
+    return t ? t.nombre : "\uD83C\uDD93 Agente Libre";
+}
+function SeleccionesNacionales({ players, teams, convocatorias, setConvocatorias }) {
+    const [busqueda, setBusqueda] = useState("");
+    const [soloElegibles, setSoloElegibles] = useState(false);
+    const [seleccionAbierta, setSeleccionAbierta] = useState(null);
+    const resumenPorNacion = useMemo(() => {
+        return NACIONALIDADES.map((nacion) => {
+            const disponibles = players.filter((p) => p.nacionalidad === nacion);
+            const arqueros = disponibles.filter((p) => p.posicion === "PT").length;
+            const elegible = disponibles.length >= CONVOCATORIA_MIN_JUGADORES && arqueros >= CONVOCATORIA_MIN_ARQUEROS;
+            const convocadosGuardados = (convocatorias[nacion] || []).filter((id) => disponibles.some((p) => p.id === id));
+            return { nacion, disponibles, total: disponibles.length, arqueros, elegible, convocados: convocadosGuardados.length };
+        });
+    }, [players, convocatorias]);
+    const filtradas = resumenPorNacion
+        .filter((r) => !busqueda.trim() || r.nacion.toLowerCase().includes(busqueda.trim().toLowerCase()))
+        .filter((r) => !soloElegibles || r.elegible)
+        .sort((a, b) => (b.elegible - a.elegible) || (b.total - a.total) || a.nacion.localeCompare(b.nacion, "es"));
+    const totalElegibles = resumenPorNacion.filter((r) => r.elegible).length;
+    const totalConJugadores = resumenPorNacion.filter((r) => r.total > 0).length;
+    const abierta = seleccionAbierta && resumenPorNacion.find((r) => r.nacion === seleccionAbierta);
+    return React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+            React.createElement("h2", { className: "text-lg font-black" }, "\uD83C\uDF0D Selecciones Nacionales"),
+            React.createElement("span", { className: "chip-total" }, `${totalElegibles} elegible${totalElegibles === 1 ? "" : "s"} de ${totalConJugadores} con jugadores`)),
+        React.createElement("p", { className: "text-xs text-zinc-500" }, `Una selección queda elegible para convocar cuando tiene al menos ${CONVOCATORIA_MIN_JUGADORES} jugadores disponibles (de cualquier equipo o agentes libres) y al menos ${CONVOCATORIA_MIN_ARQUEROS} de ellos es arquero.`),
+        React.createElement("div", { className: "card2 p-3 space-y-2" },
+            React.createElement("input", { className: "w-full", placeholder: "Buscar selecci\u00F3n\u2026", value: busqueda, onChange: (e) => setBusqueda(e.target.value) }),
+            React.createElement("label", { className: "flex items-center gap-1.5 text-xs font-semibold text-zinc-600" },
+                React.createElement("input", { type: "checkbox", checked: soloElegibles, onChange: (e) => setSoloElegibles(e.target.checked) }),
+                "Mostrar solo elegibles")),
+        React.createElement("div", { className: "card2" },
+            filtradas.map((r, i) => React.createElement("button", { key: r.nacion, onClick: () => setSeleccionAbierta(r.nacion), className: `w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left hover:bg-zinc-50 ${i < filtradas.length - 1 ? "row-line" : ""}` },
+                React.createElement("div", { className: "min-w-0" },
+                    React.createElement("div", { className: "font-medium text-sm flex items-center gap-2" },
+                        r.nacion,
+                        r.elegible && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full", style: { background: "#E2E5E9", color: "#0A1931" } }, "\u2705 Elegible")),
+                    React.createElement("div", { className: "text-xs text-zinc-500" },
+                        `${r.total} jugador${r.total === 1 ? "" : "es"} disponible${r.total === 1 ? "" : "s"} \u00B7 \uD83E\uDDE4 ${r.arqueros}`,
+                        r.convocados > 0 && ` \u00B7 Convocatoria: ${r.convocados}/${CONVOCATORIA_MIN_JUGADORES}`)),
+                React.createElement(Icon, { size: 14, className: "text-zinc-400 shrink-0" }, "\u203A"))),
+            !filtradas.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, "Ninguna selecci\u00F3n coincide con la b\u00FAsqueda.")),
+        abierta && React.createElement(ConvocatoriaModal, {
+            resumen: abierta, teams: teams,
+            convocatoria: convocatorias[abierta.nacion] || [],
+            onGuardar: (ids) => setConvocatorias((prev) => ({ ...prev, [abierta.nacion]: ids })),
+            onClose: () => setSeleccionAbierta(null),
+        }));
+}
+// Modal para armar/editar la convocatoria de una selección: elige hasta 23 jugadores entre los disponibles
+// (jugadores del torneo con esa nacionalidad, de cualquier equipo o agentes libres).
+function ConvocatoriaModal({ resumen, teams, convocatoria, onGuardar, onClose }) {
+    const [seleccionados, setSeleccionados] = useState(() => convocatoria.filter((id) => resumen.disponibles.some((p) => p.id === id)));
+    const [busqueda, setBusqueda] = useState("");
+    const arquerosSeleccionados = resumen.disponibles.filter((p) => seleccionados.includes(p.id) && p.posicion === "PT").length;
+    const llena = seleccionados.length >= CONVOCATORIA_MIN_JUGADORES;
+    const toggle = (id, esPT) => {
+        setSeleccionados((prev) => {
+            if (prev.includes(id))
+                return prev.filter((x) => x !== id);
+            if (prev.length >= CONVOCATORIA_MIN_JUGADORES)
+                return prev;
+            return [...prev, id];
+        });
+    };
+    const disponiblesFiltrados = resumen.disponibles
+        .filter((p) => !busqueda.trim() || p.nombre.toLowerCase().includes(busqueda.trim().toLowerCase()))
+        .sort((a, b) => (seleccionados.includes(b.id) - seleccionados.includes(a.id)) || b.valoracion - a.valoracion || a.nombre.localeCompare(b.nombre));
+    const guardar = () => { onGuardar(seleccionados); onClose(); };
+    return React.createElement("div", { className: "sheet-overlay", onClick: onClose },
+        React.createElement("div", { className: "sheet", style: { maxWidth: 640 }, onClick: (e) => e.stopPropagation() },
+            React.createElement("div", { className: "flex items-center justify-between mb-1" },
+                React.createElement("span", { className: "font-black text-lg flex items-center gap-2" }, "\uD83C\uDF0D ", resumen.nacion),
+                React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
+                    React.createElement(Icon, { size: 16 }, "\u2715"))),
+            React.createElement("div", { className: "flex items-center gap-2 flex-wrap text-xs font-semibold mb-3" },
+                React.createElement("span", { className: "px-2 py-1 rounded-full", style: { background: llena ? "#E2E5E9" : "#f4f4f5", color: llena ? "#0A1931" : "#71717a" } }, `${seleccionados.length}/${CONVOCATORIA_MIN_JUGADORES} convocados`),
+                React.createElement("span", { className: "px-2 py-1 rounded-full", style: { background: arquerosSeleccionados > 0 ? "#E2E5E9" : "#fef2f2", color: arquerosSeleccionados > 0 ? "#0A1931" : "#dc2626" } }, `\uD83E\uDDE4 ${arquerosSeleccionados} arquero${arquerosSeleccionados === 1 ? "" : "s"}`)),
+            React.createElement("input", { className: "w-full mb-2", placeholder: "Buscar jugador\u2026", value: busqueda, onChange: (e) => setBusqueda(e.target.value) }),
+            React.createElement("div", { className: "card2 max-h-[50vh] overflow-y-auto" },
+                disponiblesFiltrados.map((p, i) => {
+                    const marcado = seleccionados.includes(p.id);
+                    const bloqueado = !marcado && seleccionados.length >= CONVOCATORIA_MIN_JUGADORES;
+                    return React.createElement("label", { key: p.id, className: `w-full flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-zinc-50 ${i < disponiblesFiltrados.length - 1 ? "row-line" : ""} ${bloqueado ? "opacity-40" : ""}` },
+                        React.createElement("input", { type: "checkbox", checked: marcado, disabled: bloqueado, onChange: () => toggle(p.id) }),
+                        p.foto ? React.createElement("img", { src: p.foto, className: "w-9 h-9 rounded-full object-cover" }) : React.createElement("div", { className: "avatar-ph w-9 h-9 rounded-full text-xs font-bold" }, p.dorsal),
+                        React.createElement("div", { className: "flex-1 min-w-0" },
+                            React.createElement("div", { className: "font-medium text-sm flex items-center gap-1.5" }, p.nombre, p.posicion === "PT" && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full", style: { background: "#E2E5E9", color: "#0A1931" } }, "PT")),
+                            React.createElement("div", { className: "text-xs text-zinc-500 truncate" }, `${p.posicion} \u00B7 GRL ${p.valoracion} \u00B7 ${nombreEquipoDeJugador(teams, p)}`)));
+                }),
+                !disponiblesFiltrados.length && React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, "Sin resultados.")),
+            React.createElement("div", { className: "flex justify-between items-center mt-4 pt-3 border-t border-zinc-100" },
+                React.createElement("button", { onClick: () => setSeleccionados([]), className: "text-xs px-3 py-2 rounded-lg bg-red-50 text-red-600 hover:bg-red-100" }, "Vaciar convocatoria"),
+                React.createElement("button", { onClick: guardar, className: "btn-olive flex items-center gap-1 text-sm px-4 py-2 rounded-lg font-semibold" },
+                    React.createElement(Icon, { size: 14 }, "\u2714\uFE0F"),
+                    " Guardar convocatoria"))));
 }
 // ---------- Jugadores: lista global con filtros de búsqueda ----------
 // Lista a todos los jugadores del torneo (de cualquier equipo, más los agentes libres) y permite acotarla
