@@ -618,6 +618,21 @@ const STORAGE_KEY = "torneo-pes2017-html-v1";
 // Valoración efectiva de un jugador (los comodines usan el GRL fijo de su tipo, según el dorsal).
 const valoracionEfectiva = (p) => isComodin(p) ? grlComodin(p) : clamp((p === null || p === void 0 ? void 0 : p.valoracion) || 82, 60, 99);
 const avgValoracion = (lista) => lista && lista.length ? lista.reduce((a, p) => a + valoracionEfectiva(p), 0) / lista.length : 0;
+// ---------- Draft de robos entre equipos ----------
+// Antes de arrancar el Apertura: 3 rondas donde cada equipo, en orden aleatorio por ronda, puede robarle
+// (a cambio de uno propio) un jugador a otro equipo. No se pueden robar ni ofrecer comodines. El jugador
+// ofrecido a cambio debe tener GRL igual o mayor al robado, y si el robado es arquero (PT) el ofrecido
+// también debe serlo.
+const DRAFT_RONDAS = 3;
+const DRAFT_INICIAL = { estado: "no_iniciado", rondas: [], rondaActual: 0, turnoActual: 0, historial: [] };
+function barajar(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+}
 // Agrupa las posiciones detalladas en las 4 grandes categorías, para mostrar en exportables.
 const POSICION_GRUPO = (pos) => {
     if (pos === "PT")
@@ -1963,6 +1978,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
     // Selecciones Nacionales: convocatoria armada por cada selección (hasta 23 jugadores elegidos entre
     // los disponibles de esa nacionalidad), guardada por nombre de selección -> array de IDs de jugador.
     const [convocatorias, setConvocatorias] = useState({});
+    const [draft, setDraft] = useState(DRAFT_INICIAL);
     const [tab, setTab] = usePersistedState("tab", "dashboard");
     const [selectedTeamId, setSelectedTeamId] = useState(null);
     const [loaded, setLoaded] = useState(false);
@@ -1984,6 +2000,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
         setAvisos(d.avisos || []);
         setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
         setConvocatorias(d.convocatorias || {});
+        setDraft(d.draft || DRAFT_INICIAL);
         setTemporadas(d.temporadas || []);
         if (d.fases) {
             setFases({
@@ -2069,13 +2086,13 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
         if (saveTimer.current)
             clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(() => {
-            const payload = { teams, players, fases, transfers, avisos, xiTorneo, temporadas, convocatorias };
+            const payload = { teams, players, fases, transfers, avisos, xiTorneo, temporadas, convocatorias, draft };
             saveData(payload);
             if (authUid)
                 pushCloudData(authUid, payload);
         }, 400);
         return () => clearTimeout(saveTimer.current);
-    }, [teams, players, fases, transfers, avisos, xiTorneo, temporadas, convocatorias, loaded, authUid]);
+    }, [teams, players, fases, transfers, avisos, xiTorneo, temporadas, convocatorias, draft, loaded, authUid]);
     useEffect(() => {
         if (!loaded)
             return;
@@ -2119,6 +2136,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
         { id: "jugadores", label: "Jugadores", icon: "🔍" },
         { id: "sanciones", label: "Sanciones", icon: "🛡️" },
         { id: "equipos", label: "Equipos", icon: "👕" },
+        { id: "draft", label: "Draft", icon: "🔀" },
         { id: "selecciones", label: "Selecciones Nacionales", icon: "🌍" },
         { id: "extras", label: "Extras", icon: "🧰" },
     ];
@@ -2127,7 +2145,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
     const goTab = (id) => { setTab(id); if (id !== "equipos")
         setSelectedTeamId(null); setMobileNavOpen(false); };
     const exportarDatos = () => {
-        const blob = new Blob([JSON.stringify({ teams, players, fases, transfers, xiTorneo, temporadas, convocatorias }, null, 2)], { type: "application/json" });
+        const blob = new Blob([JSON.stringify({ teams, players, fases, transfers, xiTorneo, temporadas, convocatorias, draft }, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -2163,6 +2181,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
                 setTransfers(d.transfers || []);
                 setXiTorneo(d.xiTorneo || { torneo: null, apertura: null, clausura: null, liguilla: null });
                 setConvocatorias(d.convocatorias || {});
+                setDraft(d.draft || DRAFT_INICIAL);
                 setTemporadas(d.temporadas || []);
                 alert("Copia importada correctamente.");
             }
@@ -2245,6 +2264,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
                 return limpio;
             }));
         setFases({ apertura: generarJornadas(), clausura: generarJornadas(), liguilla: [] });
+        setDraft(DRAFT_INICIAL);
         setSelectedTeamId(null);
         alert("¡Nueva temporada en marcha! La anterior quedó guardada en el Salón de la Fama.");
     };
@@ -2259,6 +2279,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
         setTransfers([]);
         setXiTorneo({ torneo: null, apertura: null, clausura: null, liguilla: null });
         setConvocatorias({});
+        setDraft(DRAFT_INICIAL);
         setTemporadas([]);
         setDraftPartido(draftPartidoVacio());
         try {
@@ -2295,6 +2316,7 @@ function TorneoApp({ authUid, firebaseDisponible, onIrALogin }) {
                 tab === "estadisticas" && React.createElement(Estadisticas, { players: players, teams: teams }),
                 tab === "sanciones" && React.createElement(Sanciones, { players: players, setPlayers: setPlayers, teams: teams }),
                 tab === "selecciones" && React.createElement(SeleccionesNacionales, { players: players, teams: teams, convocatorias: convocatorias, setConvocatorias: setConvocatorias }),
+                tab === "draft" && React.createElement(DraftView, { teams: teams, players: players, setPlayers: setPlayers, draft: draft, setDraft: setDraft }),
                 tab === "extras" && React.createElement(Extras, { onExport: exportarDatos, onImport: importarDatos, onResetLiga: reiniciarLiga, onResetTodo: borrarTodo, onNuevaTemporada: () => setMostrarNuevaTemporada(true), diasDesdeBackup: diasDesdeBackup, authUid: authUid, syncEstado: syncEstado, firebaseDisponible: firebaseDisponible, onIrALogin: onIrALogin }),
                 mostrarNuevaTemporada && React.createElement(NuevaTemporadaModal, { teams: teams, players: players, proximoNumero: temporadas.length + 1, onClose: () => setMostrarNuevaTemporada(false), onConfirm: comenzarNuevaTemporada }),
                 tab === "salonfama" && React.createElement(SalonDeLaFama, { temporadas: temporadas })))));
@@ -3309,6 +3331,127 @@ function ConvocatoriaModal({ resumen, teams, convocatoria, onGuardar, onClose })
                 React.createElement("button", { onClick: guardar, className: "btn-olive flex items-center gap-1 text-sm px-4 py-2 rounded-lg font-semibold" },
                     React.createElement(Icon, { size: 14 }, "\u2714\uFE0F"),
                     " Guardar convocatoria"))));
+}
+// ---------- Draft de robos entre equipos ----------
+// Pantalla del draft previo al Apertura: 3 rondas, orden de turnos sorteado de nuevo en cada ronda. En su
+// turno, un equipo elige un equipo objetivo, un jugador suyo para robarle (sin comodines) y un jugador
+// propio para entregar a cambio (sin comodines, GRL igual o mayor, y arquero si el robado es arquero).
+function DraftView({ teams, players, setPlayers, draft, setDraft }) {
+    const [equipoObjetivoId, setEquipoObjetivoId] = useState("");
+    const [jugadorRobadoId, setJugadorRobadoId] = useState("");
+    const [jugadorPropioId, setJugadorPropioId] = useState("");
+    const limpiarSeleccion = () => { setEquipoObjetivoId(""); setJugadorRobadoId(""); setJugadorPropioId(""); };
+    const equiposSinPlantelCompleto = teams.filter((t) => players.filter((p) => p.equipoId === t.id).length < MAX_JUGADORES);
+    const iniciarDraft = () => {
+        if (teams.length < 2) {
+            alert("Hacen falta al menos 2 equipos para el draft.");
+            return;
+        }
+        if (equiposSinPlantelCompleto.length && !confirm(`${equiposSinPlantelCompleto.length} equipo(s) todav\u00EDa no tienen los ${MAX_JUGADORES} jugadores completos. \u00BFIniciar igual el draft?`))
+            return;
+        const rondas = Array.from({ length: DRAFT_RONDAS }, () => barajar(teams.map((t) => t.id)));
+        setDraft({ estado: "en_curso", rondas, rondaActual: 0, turnoActual: 0, historial: [] });
+        limpiarSeleccion();
+    };
+    const reiniciarDraft = () => {
+        if (!confirm("Esto reinicia el draft desde cero (ronda 1, nuevo orden aleatorio). Los robos ya realizados NO se deshacen, los jugadores quedan en el equipo al que fueron a parar. \u00BFContinuar?"))
+            return;
+        setDraft(DRAFT_INICIAL);
+        limpiarSeleccion();
+    };
+    const avanzarTurno = (base) => {
+        let ronda = base.rondaActual;
+        let turno = base.turnoActual + 1;
+        if (turno >= (base.rondas[ronda] || []).length) {
+            ronda += 1;
+            turno = 0;
+        }
+        return { ...base, rondaActual: ronda, turnoActual: turno, estado: ronda >= DRAFT_RONDAS ? "finalizado" : "en_curso" };
+    };
+    const pasarTurno = () => { setDraft((prev) => avanzarTurno(prev)); limpiarSeleccion(); };
+    if (draft.estado === "no_iniciado") {
+        return React.createElement("div", { className: "space-y-3" },
+            React.createElement("h2", { className: "text-lg font-black" }, "\uD83D\uDD00 Draft de Robos"),
+            React.createElement("div", { className: "card2 p-4 space-y-2 text-sm text-zinc-600" },
+                React.createElement("p", null, `Antes de arrancar el Apertura, cada equipo tiene ${DRAFT_RONDAS} rondas para robarle un jugador a otro equipo a cambio de uno propio. El orden de turnos se sortea de nuevo en cada ronda (no siempre empieza el mismo equipo).`),
+                React.createElement("ul", { className: "list-disc pl-5 space-y-1" },
+                    React.createElement("li", null, "Los comodines no se pueden robar ni ofrecer a cambio."),
+                    React.createElement("li", null, "El jugador que se ofrece a cambio debe tener GRL igual o mayor al robado."),
+                    React.createElement("li", null, "Si el jugador robado es arquero (PT), el ofrecido tambi\u00E9n debe serlo.")),
+                equiposSinPlantelCompleto.length > 0 && React.createElement("p", { className: "text-xs font-semibold", style: { color: "#B45309" } }, `\u26A0\uFE0F ${equiposSinPlantelCompleto.length} equipo(s) todav\u00EDa no tienen los ${MAX_JUGADORES} jugadores completos: ${equiposSinPlantelCompleto.map((t) => t.nombre).join(", ")}.`)),
+            React.createElement("button", { onClick: iniciarDraft, disabled: teams.length < 2, className: "btn-olive rounded-full px-5 py-2.5 font-semibold text-sm" }, "\uD83D\uDD00 Iniciar Draft"));
+    }
+    const rondaTeams = draft.rondas[draft.rondaActual] || [];
+    const equipoActualId = rondaTeams[draft.turnoActual];
+    const equipoActual = teams.find((t) => t.id === equipoActualId);
+    const jugadorRobado = players.find((p) => p.id === jugadorRobadoId);
+    const jugadorPropio = players.find((p) => p.id === jugadorPropioId);
+    const equiposObjetivoPosibles = teams.filter((t) => t.id !== equipoActualId && players.some((p) => p.equipoId === t.id && !isComodin(p)));
+    const rosterObjetivo = equipoObjetivoId ? players.filter((p) => p.equipoId === equipoObjetivoId && !isComodin(p)).sort((a, b) => b.valoracion - a.valoracion) : [];
+    const rosterPropioElegible = jugadorRobado ? players.filter((p) => p.equipoId === equipoActualId && !isComodin(p) && p.valoracion >= jugadorRobado.valoracion && (jugadorRobado.posicion !== "PT" || p.posicion === "PT")).sort((a, b) => b.valoracion - a.valoracion) : [];
+    const ejecutarRobo = () => {
+        if (!jugadorRobado || !jugadorPropio || !equipoActual)
+            return;
+        setPlayers(players.map((p) => {
+            if (p.id === jugadorRobado.id)
+                return { ...p, equipoId: equipoActual.id };
+            if (p.id === jugadorPropio.id)
+                return { ...p, equipoId: equipoObjetivoId };
+            return p;
+        }));
+        const objetivo = teams.find((t) => t.id === equipoObjetivoId);
+        const entrada = {
+            ronda: draft.rondaActual + 1,
+            equipoQueRobaNombre: equipoActual.nombre,
+            equipoAfectadoNombre: objetivo ? objetivo.nombre : "",
+            jugadorRobado: { nombre: jugadorRobado.nombre, dorsal: jugadorRobado.dorsal, valoracion: jugadorRobado.valoracion, posicion: jugadorRobado.posicion },
+            jugadorEntregado: { nombre: jugadorPropio.nombre, dorsal: jugadorPropio.dorsal, valoracion: jugadorPropio.valoracion, posicion: jugadorPropio.posicion },
+        };
+        setDraft((prev) => avanzarTurno({ ...prev, historial: [...prev.historial, entrada] }));
+        limpiarSeleccion();
+    };
+    const historialReciente = draft.historial.slice().reverse();
+    return React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "flex items-center justify-between flex-wrap gap-2" },
+            React.createElement("h2", { className: "text-lg font-black" }, "\uD83D\uDD00 Draft de Robos"),
+            React.createElement("span", { className: "chip-total" }, draft.estado === "finalizado" ? "Draft finalizado" : `Ronda ${draft.rondaActual + 1}/${DRAFT_RONDAS} \u00B7 Turno ${draft.turnoActual + 1}/${rondaTeams.length}`)),
+        draft.estado === "finalizado" && React.createElement("div", { className: "card2 p-4 text-sm text-zinc-600" },
+            React.createElement("p", { className: "font-semibold", style: { color: "#0A1931" } }, "\u2705 Se completaron las 3 rondas del draft."),
+            React.createElement("p", null, "Ya se puede arrancar el Apertura. Si quer\u00E9s repetirlo (por ejemplo, para una nueva temporada), reinici\u00E1lo abajo.")),
+        draft.estado === "en_curso" && !equipoActual && React.createElement("div", { className: "card2 p-4 text-sm text-zinc-600 space-y-2" },
+            React.createElement("p", null, "El equipo de este turno ya no existe (fue eliminado durante el draft)."),
+            React.createElement("button", { onClick: pasarTurno, className: "text-xs px-3 py-2 rounded-lg font-semibold bg-zinc-100 hover:bg-zinc-200" }, "Saltar turno \u203A")),
+        draft.estado === "en_curso" && equipoActual && React.createElement("div", { className: "card2 p-4 space-y-3" },
+            React.createElement("div", { className: "flex items-center gap-2" },
+                equipoActual.escudo ? React.createElement("img", { src: equipoActual.escudo, className: "w-8 h-8 rounded-full object-cover" }) : null,
+                React.createElement("span", { className: "font-black" }, `Turno de ${equipoActual.nombre}`)),
+            React.createElement("div", { className: "grid gap-2 text-xs" },
+                React.createElement(Field, { label: "1. Robarle un jugador a\u2026" },
+                    React.createElement("select", { className: "w-full", value: equipoObjetivoId, onChange: (e) => { setEquipoObjetivoId(e.target.value); setJugadorRobadoId(""); setJugadorPropioId(""); } },
+                        React.createElement("option", { value: "" }, "Eleg\u00ED un equipo\u2026"),
+                        equiposObjetivoPosibles.map((t) => React.createElement("option", { key: t.id, value: t.id }, t.nombre)))),
+                equipoObjetivoId && React.createElement(Field, { label: "2. Jugador a robar" },
+                    React.createElement("select", { className: "w-full", value: jugadorRobadoId, onChange: (e) => { setJugadorRobadoId(e.target.value); setJugadorPropioId(""); } },
+                        React.createElement("option", { value: "" }, "Eleg\u00ED un jugador\u2026"),
+                        rosterObjetivo.map((p) => React.createElement("option", { key: p.id, value: p.id }, `${p.nombre} \u2014 ${p.posicion} \u00B7 GRL ${p.valoracion}`)))),
+                jugadorRobado && React.createElement(Field, { label: "3. Jugador propio a cambio" },
+                    React.createElement("select", { className: "w-full", value: jugadorPropioId, onChange: (e) => setJugadorPropioId(e.target.value) },
+                        React.createElement("option", { value: "" }, "Eleg\u00ED un jugador\u2026"),
+                        rosterPropioElegible.map((p) => React.createElement("option", { key: p.id, value: p.id }, `${p.nombre} \u2014 ${p.posicion} \u00B7 GRL ${p.valoracion}`))))),
+            jugadorRobado && !rosterPropioElegible.length && React.createElement("p", { className: "text-xs font-semibold", style: { color: "#dc2626" } }, `No ten\u00E9s ning\u00FAn jugador propio que cumpla la condici\u00F3n (GRL \u2265 ${jugadorRobado.valoracion}${jugadorRobado.posicion === "PT" ? ", arquero" : ""}) para este robo. Prob\u00E1 con otro jugador.`),
+            React.createElement("div", { className: "flex justify-between items-center pt-2 border-t border-zinc-100" },
+                React.createElement("button", { onClick: pasarTurno, className: "text-xs px-3 py-2 rounded-lg font-semibold bg-zinc-100 hover:bg-zinc-200" }, "Pasar turno \u203A"),
+                React.createElement("button", { onClick: ejecutarRobo, disabled: !jugadorPropio, className: "btn-olive flex items-center gap-1 text-sm px-4 py-2 rounded-lg font-semibold disabled:opacity-40" },
+                    React.createElement(Icon, { size: 14 }, "\uD83D\uDD00"),
+                    " Confirmar robo"))),
+        React.createElement("div", { className: "card2" },
+            React.createElement("div", { className: "section-header px-4 py-2.5" }, `Historial (${draft.historial.length})`),
+            historialReciente.length ? historialReciente.map((h, i) => React.createElement("div", { key: i, className: `px-4 py-2.5 text-sm ${i < historialReciente.length - 1 ? "row-line" : ""}` },
+                React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full mr-1.5", style: { background: "#E2E5E9", color: "#0A1931" } }, `R${h.ronda}`),
+                React.createElement("b", null, h.equipoQueRobaNombre), " se llev\u00F3 a ", React.createElement("b", null, h.jugadorRobado.nombre), ` (${h.jugadorRobado.posicion} \u00B7 GRL ${h.jugadorRobado.valoracion}) de `, React.createElement("b", null, h.equipoAfectadoNombre), " a cambio de ", React.createElement("b", null, h.jugadorEntregado.nombre), ` (${h.jugadorEntregado.posicion} \u00B7 GRL ${h.jugadorEntregado.valoracion})`)) : React.createElement("div", { className: "text-center text-zinc-500 py-8 text-sm" }, "Todav\u00EDa no se hizo ning\u00FAn robo.")),
+        React.createElement("button", { onClick: reiniciarDraft, className: "text-xs text-red-500 flex items-center gap-1 hover:text-red-700" },
+            React.createElement(Icon, { size: 13 }, "\u21BA"),
+            " Reiniciar draft"));
 }
 // ---------- Jugadores: lista global con filtros de búsqueda ----------
 // Lista a todos los jugadores del torneo (de cualquier equipo, más los agentes libres) y permite acotarla
