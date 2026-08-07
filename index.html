@@ -601,12 +601,22 @@ const PARTIDOS_POR_JORNADA = 15;
 // entre los equipos según su posición en la tabla de esa fase en ese momento.
 const JORNADAS_BONO = new Set([3, 6, 9, 12, 15, 18, 21, 24, 27, 29]);
 const PRESUPUESTO_BASE = 5000000;
-const DORSALES_COMODIN = [31, 32];
-const GRL_COMODIN = 85;
+// Cada dorsal de comodín define un tipo fijo con su propio GRL. 31 y 32 son dos cupos del mismo tipo
+// (Comodín Común); 30, 29 y 28 son cupos únicos por equipo (Ícono, Promesa y Nacional respectivamente).
+const TIPOS_COMODIN = {
+    31: { tipo: "COMÚN", nombre: "Comodín Común", grl: 87 },
+    32: { tipo: "COMÚN", nombre: "Comodín Común", grl: 87 },
+    30: { tipo: "ICONO", nombre: "Comodín Ícono", grl: 89 },
+    29: { tipo: "PROMESA", nombre: "Comodín Promesa", grl: 86 },
+    28: { tipo: "NACIONAL", nombre: "Comodín Nacional", grl: 88 },
+};
+const DORSALES_COMODIN = Object.keys(TIPOS_COMODIN).map(Number); // [28, 29, 30, 31, 32]
 const isComodin = (p) => p && DORSALES_COMODIN.includes(p.dorsal);
+const infoComodin = (p) => isComodin(p) ? TIPOS_COMODIN[p.dorsal] : null;
+const grlComodin = (p) => { const info = infoComodin(p); return info ? info.grl : null; };
 const STORAGE_KEY = "torneo-pes2017-html-v1";
-// Valoración efectiva de un jugador (los comodines usan el GRL fijo de comodín).
-const valoracionEfectiva = (p) => isComodin(p) ? GRL_COMODIN : clamp((p === null || p === void 0 ? void 0 : p.valoracion) || 82, 60, 99);
+// Valoración efectiva de un jugador (los comodines usan el GRL fijo de su tipo, según el dorsal).
+const valoracionEfectiva = (p) => isComodin(p) ? grlComodin(p) : clamp((p === null || p === void 0 ? void 0 : p.valoracion) || 82, 60, 99);
 const avgValoracion = (lista) => lista && lista.length ? lista.reduce((a, p) => a + valoracionEfectiva(p), 0) / lista.length : 0;
 // Agrupa las posiciones detalladas en las 4 grandes categorías, para mostrar en exportables.
 const POSICION_GRUPO = (pos) => {
@@ -839,17 +849,18 @@ function exportarPlantelCsv(team, squad) {
     descargarCsv(`equipo-${slug || "equipo"}.csv`, filas);
 }
 // Plantilla en blanco para armar un equipo a mano fuera de la app: header + una fila de ejemplo con los
-// valores que espera cada columna (posición válida, dorsal, etc.) y otra fila mostrando un comodín (se
-// identifican solo por el dorsal, 31 o 32; la Valoracion que tengan en el CSV no importa, la app la
-// reemplaza igual por el GRL fijo de comodín), lista para duplicar por cada jugador y después importar
-// con "Importar equipo desde CSV". Solo lleva las columnas mínimas (Equipo, NombreJugador, Dorsal,
-// Valoracion, Posicion); el resto de los campos del equipo y de cada jugador (Escudo, Presupuesto,
-// Goles, etc.) no hace falta incluirlos: quedan con sus valores predeterminados al importar.
+// valores que espera cada columna (posición válida, dorsal, etc.) y una fila de ejemplo por cada tipo de
+// comodín (se identifican solo por el dorsal: 31/32 Común, 30 Ícono, 29 Promesa, 28 Nacional; la
+// Valoracion que tengan en el CSV no importa, la app la reemplaza igual por el GRL fijo de cada tipo),
+// lista para duplicar por cada jugador y después importar con "Importar equipo desde CSV". Solo lleva las
+// columnas mínimas (Equipo, NombreJugador, Dorsal, Valoracion, Posicion); el resto de los campos del
+// equipo y de cada jugador (Escudo, Presupuesto, Goles, etc.) no hace falta incluirlos: quedan con sus
+// valores predeterminados al importar.
 const CAMPOS_PLANTILLA_CSV = ["Equipo", "NombreJugador", "Dorsal", "Valoracion", "Posicion"];
 function descargarPlantillaEquipoCsv() {
     const filaEjemplo = ["Nombre del Equipo", "Nombre del Jugador", 1, 82, "MC"];
-    const filaComodin = ["Nombre del Equipo", `Comod\u00edn #${DORSALES_COMODIN[0]}`, DORSALES_COMODIN[0], GRL_COMODIN, "MC"];
-    const filas = [CAMPOS_PLANTILLA_CSV, filaEjemplo, filaComodin];
+    const filasComodin = DORSALES_COMODIN.map((d) => ["Nombre del Equipo", `${TIPOS_COMODIN[d].nombre} #${d}`, d, TIPOS_COMODIN[d].grl, "MC"]);
+    const filas = [CAMPOS_PLANTILLA_CSV, filaEjemplo, ...filasComodin];
     descargarCsv("plantilla-equipo-en-blanco.csv", filas);
 }
 // Parser de CSV genérico: soporta campos entre comillas con comas, comillas escapadas ("") y saltos de
@@ -988,13 +999,13 @@ function generarJornadas() {
 // Valor de mercado equilibrado para jugadores 80-89 (curva exponencial suave)
 function calcValorMercado(jugador) {
     const comodin = isComodin(jugador);
-    const grl = comodin ? GRL_COMODIN : clamp(jugador.valoracion || 82, 60, 99);
+    const grl = comodin ? grlComodin(jugador) : clamp(jugador.valoracion || 82, 60, 99);
     const base = Math.pow(1.32, grl - 79) * 200000;
     const sp = avg(jugador.scores) || 6.0;
     const factor = clamp(1 + (sp - 6) * 0.12 + (jugador.goles || 0) * 0.02 + (jugador.asistencias || 0) * 0.015 - (jugador.rojas || 0) * 0.05 - (jugador.amarillas || 0) * 0.01, 0.5, 2.2);
     let valor = base * factor;
     if (comodin)
-        valor *= Math.pow(1.32, 2); // un comodín (85 fijo) vale casi como un jugador normal de 87
+        valor *= Math.pow(1.32, 2); // todo comodín vale como un jugador normal ~2 puntos de GRL por encima del suyo
     return Math.round(valor / 1000) * 1000;
 }
 function sugerirScore(golesP, asistP, amarillaP, rojaP, minutos) {
@@ -2514,11 +2525,11 @@ function FilaJugadorTemporada({ p, edit, onChange }) {
         React.createElement("input", { type: "checkbox", checked: queda, onChange: (e) => onChange({ queda: e.target.checked }) }),
         p.foto ? React.createElement("img", { src: p.foto, className: "w-8 h-8 rounded-full object-cover shrink-0" }) : React.createElement("div", { className: "avatar-ph w-8 h-8 rounded-full text-[10px] font-bold shrink-0" }, p.dorsal),
         React.createElement("div", { className: "flex-1 text-xs min-w-0" },
-            React.createElement("div", { className: "font-medium truncate" }, p.nombre, comodin && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full ml-1", style: { background: "#E2E5E9", color: "#0A1931" } }, "COMOD\u00CDN")),
+            React.createElement("div", { className: "font-medium truncate" }, p.nombre, comodin && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full ml-1", style: { background: "#E2E5E9", color: "#0A1931" } }, infoComodin(p).tipo)),
             React.createElement("div", { className: "text-zinc-500" }, `#${p.dorsal} \u00B7 ${p.posicion}`)),
         React.createElement("div", { className: "flex items-center gap-1 shrink-0" },
             React.createElement("span", { className: "text-[10px] text-zinc-400 uppercase font-semibold" }, "GRL"),
-            React.createElement(NumberField, { min: 60, max: 99, disabled: comodin || !queda, value: comodin ? GRL_COMODIN : edit.valoracion, onCommit: (n) => onChange({ valoracion: n }), className: "w-16 text-center" })));
+            React.createElement(NumberField, { min: 60, max: 99, disabled: comodin || !queda, value: comodin ? grlComodin(p) : edit.valoracion, onCommit: (n) => onChange({ valoracion: n }), className: "w-16 text-center" })));
 }
 function NuevaTemporadaModal({ teams, players, proximoNumero, onClose, onConfirm }) {
     const [nombreTemporada, setNombreTemporada] = useState(`Temporada ${proximoNumero || 1}`);
@@ -2889,20 +2900,24 @@ function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack, t
         setNombreNuevo("");
     };
     const comodinesActuales = squad.filter(isComodin);
-    const addComodin = () => {
-        if (comodinesActuales.length >= DORSALES_COMODIN.length) {
-            alert("Este equipo ya tiene sus 2 comodines (dorsales 31 y 32).");
+    const dorsalesLibresComodin = DORSALES_COMODIN.filter((d) => !squad.some((p) => p.dorsal === d));
+    // Tipos únicos por su GRL: Común tiene 2 cupos (31 y 32), los otros 3 tienen 1 cupo cada uno.
+    const tiposComodinDisponibles = [31, 30, 29, 28].map((dorsalRef) => {
+        const info = TIPOS_COMODIN[dorsalRef];
+        const dorsalLibre = (dorsalRef === 31 ? [31, 32] : [dorsalRef]).find((d) => dorsalesLibresComodin.includes(d));
+        return { ...info, dorsal: dorsalLibre };
+    });
+    const addComodin = (dorsal) => {
+        if (!dorsal)
             return;
-        }
         if (squad.length >= MAX_JUGADORES) {
             alert("Este equipo ya tiene 32 jugadores.");
             return;
         }
-        const usados = new Set(squad.map((p) => p.dorsal));
-        const dorsal = DORSALES_COMODIN.find((d) => !usados.has(d));
+        const info = TIPOS_COMODIN[dorsal];
         const np = nuevoJugador(teamId, dorsal);
-        np.nombre = `Comodín #${dorsal}`;
-        np.valoracion = GRL_COMODIN;
+        np.nombre = `${info.nombre} #${dorsal}`;
+        np.valoracion = info.grl;
         np.valorMercado = calcValorMercado(np);
         setPlayers([...players, np]);
     };
@@ -2952,12 +2967,13 @@ function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack, t
             React.createElement("div", { className: "p-3 flex gap-2 row-line" },
                 React.createElement("input", { className: "flex-1", placeholder: "Nombre del jugador", value: nombreNuevo, onChange: (e) => setNombreNuevo(e.target.value), onKeyDown: (e) => e.key === "Enter" && addPlayer() }),
                 React.createElement("button", { onClick: addPlayer, className: "btn-olive rounded-full px-5 font-semibold text-sm" }, "A\u00F1adir")),
-            React.createElement("div", { className: "px-3 pb-3 flex items-center justify-between gap-2" },
-                React.createElement("span", { className: "text-xs text-zinc-500" },
-                    "\uD83C\uDCCF Comodines (85 GRL, dorsales 31/32): ",
+            React.createElement("div", { className: "px-3 pb-3" },
+                React.createElement("div", { className: "text-xs text-zinc-500 mb-1.5" },
+                    "\uD83C\uDCCF Comodines: ",
                     comodinesActuales.length,
-                    "/2"),
-                React.createElement("button", { onClick: addComodin, disabled: comodinesActuales.length >= 2, className: "text-xs px-3 py-1.5 rounded-full font-semibold", style: { background: comodinesActuales.length >= 2 ? "#e4e4e7" : "#0A1931", color: comodinesActuales.length >= 2 ? "#a1a1aa" : "#fff" } }, "\uD83C\uDCCF A\u00F1adir comod\u00EDn")),
+                    "/5"),
+                React.createElement("div", { className: "flex flex-wrap gap-1.5" },
+                    tiposComodinDisponibles.map((t) => React.createElement("button", { key: t.tipo, onClick: () => addComodin(t.dorsal), disabled: !t.dorsal || squad.length >= MAX_JUGADORES, className: "text-xs px-3 py-1.5 rounded-full font-semibold", style: { background: t.dorsal ? "#0A1931" : "#e4e4e7", color: t.dorsal ? "#fff" : "#a1a1aa" } }, `\uD83C\uDCCF ${t.tipo} (GRL ${t.grl})`)))),
             React.createElement("div", null,
                 squad.map((p) => (React.createElement("button", { key: p.id, onClick: () => setEditPlayerId(p.id), className: "w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-zinc-50 row-line" },
                     p.foto ? React.createElement("img", { src: p.foto, className: "w-10 h-10 rounded-full object-cover" }) : React.createElement("div", { className: "avatar-ph w-10 h-10 rounded-full text-xs font-bold" }, p.dorsal),
@@ -2965,7 +2981,7 @@ function EquipoDetalle({ teamId, teams, setTeams, players, setPlayers, onBack, t
                         React.createElement("div", { className: "font-medium text-sm flex items-center gap-2" },
                             p.nombre,
                             " ",
-                            isComodin(p) && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full", style: { background: "#E2E5E9", color: "#0A1931" } }, "COMOD\u00CDN"),
+                            isComodin(p) && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full", style: { background: "#E2E5E9", color: "#0A1931" } }, infoComodin(p).tipo),
                             p.sancionJornadas > 0 && React.createElement(Icon, { size: 12 }, "\uD83D\uDEAB"),
                             (p.jornadasLesionado || 0) > 0 && React.createElement(Icon, { size: 12, className: "text-red-500" }, "\uD83D\uDE91")),
                         React.createElement("div", { className: "text-xs text-zinc-500 flex items-center gap-1.5 flex-wrap" },
@@ -3001,7 +3017,7 @@ function PlayerSheet({ player: p, onClose, onChange, onRemove, jornadas, teams }
     return (React.createElement("div", { className: "sheet-overlay", onClick: onClose },
         React.createElement("div", { className: "sheet", onClick: (e) => e.stopPropagation() },
             React.createElement("div", { className: "flex justify-between items-center mb-3" },
-                React.createElement("span", { className: "font-black text-lg" }, comodin ? "Editar comod\u00EDn \uD83C\uDCCF" : "Editar jugador"),
+                React.createElement("span", { className: "font-black text-lg" }, comodin ? `Editar ${infoComodin(p).nombre} \uD83C\uDCCF` : "Editar jugador"),
                 React.createElement("button", { onClick: onClose, className: "p-1.5 rounded-lg bg-zinc-100" },
                     React.createElement(Icon, { size: 16 }, "\u2715"))),
             React.createElement("div", { className: "mb-3 p-2.5 rounded-xl flex items-center justify-between gap-2 flex-wrap", style: { background: "#fafafa", border: "1px solid #eee" } },
@@ -3027,7 +3043,7 @@ function PlayerSheet({ player: p, onClose, onChange, onRemove, jornadas, teams }
                         React.createElement("option", { value: "" }, "\u2014 Sin definir \u2014"),
                         NACIONALIDADES.map((n) => React.createElement("option", { key: n, value: n }, n)))),
                 React.createElement(Field, { label: "Valoraci\u00F3n (GRL 60-99)" },
-                    React.createElement(NumberField, { min: 60, max: 99, disabled: comodin, value: comodin ? GRL_COMODIN : p.valoracion, onCommit: (n) => onChange({ valoracion: n }) })),
+                    React.createElement(NumberField, { min: 60, max: 99, disabled: comodin, value: comodin ? grlComodin(p) : p.valoracion, onCommit: (n) => onChange({ valoracion: n }) })),
                 React.createElement(Field, { label: "Score promedio" },
                     React.createElement("input", { disabled: true, value: p.scores && p.scores.length ? scoreProm.toFixed(1) : "—" })),
                 React.createElement(Field, { label: "Goles" },
@@ -3378,7 +3394,7 @@ function JugadoresView({ teams, players, setPlayers, todasLasJornadas }) {
                         p.nombre,
                         " ",
                         esObjetivo && React.createElement("span", { title: "Objetivo de la Lista de Deseos de algún equipo", className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-0.5", style: { background: "#FEF3C7", color: "#B45309" } }, "\u2B50 Objetivo"),
-                        isComodin(p) && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full", style: { background: "#E2E5E9", color: "#0A1931" } }, "COMOD\u00CDN"),
+                        isComodin(p) && React.createElement("span", { className: "text-[10px] font-bold px-1.5 py-0.5 rounded-full", style: { background: "#E2E5E9", color: "#0A1931" } }, infoComodin(p).tipo),
                         p.sancionJornadas > 0 && React.createElement(Icon, { size: 12 }, "\uD83D\uDEAB"),
                         (p.jornadasLesionado || 0) > 0 && React.createElement(Icon, { size: 12, className: "text-red-500" }, "\uD83D\uDE91")),
                     React.createElement("div", { className: "text-xs text-zinc-500 truncate flex items-center gap-1.5 flex-wrap" },
